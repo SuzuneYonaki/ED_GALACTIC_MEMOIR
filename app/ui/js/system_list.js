@@ -869,10 +869,17 @@ function updateCollapsibleBadges() {
   let sortCount = 0;
   if (state.datePreset && state.datePreset !== 'all') sortCount++;
   if (state.dateFrom || state.dateTo) sortCount++;
-  if (state.sortBy && (state.sortBy !== 'rarity_score' || state.sortOrder !== 'desc')) sortCount++;
-  if (state.sortBy2) sortCount++;
-  if (state.sortBy3) sortCount++;
-  if (state.liveSyncEnabled) sortCount++;
+  if (state.liveSyncEnabled) {
+    // In LIVE mode, sorting is auto-locked to latest visited; count only the LIVE status itself
+    sortCount++;
+  } else {
+    // In manual mode, count non-default user sort criteria
+    const effSort = state.savedSortBy || state.sortBy;
+    const effOrder = state.savedSortOrder || state.sortOrder || 'desc';
+    if (effSort && (effSort !== 'rarity_score' || effOrder !== 'desc')) sortCount++;
+    if (state.sortBy2 && state.sortBy2 !== 'none') sortCount++;
+    if (state.sortBy3 && state.sortBy3 !== 'none') sortCount++;
+  }
   const badgeSort = document.getElementById('badge-sort-filters');
   if (badgeSort) {
     badgeSort.innerText = sortCount > 0 ? sortCount : '';

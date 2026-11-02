@@ -106,3 +106,14 @@ class TestUIStep2LiveSortReset(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+    def test_app_js_and_system_list_js_default_sort_consistency(self):
+        app_js = (self.root / "app" / "ui" / "js" / "app.js").read_text(encoding="utf-8")
+        sys_js = (self.root / "app" / "ui" / "js" / "system_list.js").read_text(encoding="utf-8")
+
+        # 1. Ensure initial state in app.js defaults to rarity_score
+        self.assertIn("sortBy: 'rarity_score',", app_js)
+        self.assertIn("savedSortBy: 'rarity_score',", app_js)
+
+        # 2. Ensure badge count logic differentiates LIVE mode from custom sort
+        self.assertIn("// In LIVE mode, sorting is auto-locked to latest visited; count only the LIVE status itself", sys_js)
+

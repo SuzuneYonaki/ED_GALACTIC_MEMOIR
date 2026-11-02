@@ -49,13 +49,13 @@ let state = {
   miningScout: '',
   hasLargePad: false,
   maxArrivalDistLs: null,
-  sortBy: 'last_visited',
+  sortBy: 'rarity_score',
   sortOrder: 'desc',
   sortBy2: null,
   sortOrder2: 'desc',
   sortBy3: null,
   sortOrder3: 'desc',
-  savedSortBy: 'total_potential_value',
+  savedSortBy: 'rarity_score',
   savedSortOrder: 'desc',
   savedSortBy2: null,
   savedSortOrder2: 'desc',
@@ -263,7 +263,7 @@ async function fetchSystems(options = {}) {
   const autoSelectTop = (options && options.autoSelectTop) || state.autoSelectTopNext || false;
   state.autoSelectTopNext = false;
 
-  const activeSortBy = state.liveSyncEnabled ? 'last_visited' : (state.savedSortBy || 'total_potential_value');
+  const activeSortBy = state.liveSyncEnabled ? 'last_visited' : (state.savedSortBy || state.sortBy || 'rarity_score');
   const activeSortOrder = state.liveSyncEnabled ? 'desc' : (state.savedSortOrder || 'desc');
   const activeSortBy2 = state.liveSyncEnabled ? null : state.savedSortBy2;
   const activeSortOrder2 = state.liveSyncEnabled ? 'desc' : state.savedSortOrder2;
