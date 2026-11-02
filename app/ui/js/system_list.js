@@ -321,14 +321,19 @@ function renderSystemList() {
       }
     }
 
-    const formatAgeMy = (v) => {
-      const n = Number(v);
-      if (v === null || v === undefined || isNaN(n) || n < 0) return '';
-      return (n < 10 ? Math.round(n * 10) / 10 : Math.round(n)).toLocaleString();
-    };
-    const ageDisplay = formatAgeMy(sys.system_age_my);
-    const ageFormatted = ageDisplay ? `${t('system_age')}: ${ageDisplay} ${t('my_unit')}` : '';
-    const ageHtml = ageFormatted ? `<span class="system-card-age" title="${ageFormatted}">${ageFormatted}</span>` : '';
+    const ageDisplay = (typeof formatStellarAge === 'function')
+      ? formatStellarAge(sys.system_age_my)
+      : (sys.system_age_my != null ? `${sys.system_age_my} Myr` : '');
+    const ageFormatted = ageDisplay ? `${t('system_age')}: ${ageDisplay}` : '';
+    let ageTip = '';
+    if (ageDisplay) {
+      const isJa = (typeof currentLang !== 'undefined' ? currentLang : 'ja') === 'ja';
+      const rawMy = (typeof sys.system_age_my === 'number') ? sys.system_age_my.toLocaleString() : sys.system_age_my;
+      ageTip = isJa
+        ? `主星・星系年齢: ${ageDisplay} (${rawMy} 百万年 / ${rawMy} Myr)`
+        : `System Age: ${ageDisplay} (${rawMy} Million Years)`;
+    }
+    const ageHtml = ageFormatted ? `<span class="system-card-age" title="${escapeHtml(ageTip)}">${escapeHtml(ageFormatted)}</span>` : '';
 
     const mainMass = (typeof formatSolarMass === 'function') ? formatSolarMass(sys.main_star_mass) : null;
     const totMass = (typeof formatSolarMass === 'function') ? formatSolarMass(sys.total_system_mass) : null;
@@ -345,11 +350,13 @@ function renderSystemList() {
 
     // Average age of logged systems sharing this system's voxel code (needs 2+ samples to be informative)
     let voxelHtml = '';
-    const voxelAvgDisplay = formatAgeMy(sys.voxel_age_avg_my);
+    const voxelAvgDisplay = (typeof formatStellarAge === 'function')
+      ? formatStellarAge(sys.voxel_age_avg_my)
+      : (sys.voxel_age_avg_my != null ? `${sys.voxel_age_avg_my} Myr` : '');
     if (voxelAvgDisplay && sys.voxel_age_count >= 2) {
-      const voxelText = `${t('voxel_age_avg')}: ${voxelAvgDisplay} ${t('my_unit')} (n=${sys.voxel_age_count})`;
+      const voxelText = `${t('voxel_age_avg')}: ${voxelAvgDisplay} (n=${sys.voxel_age_count})`;
       const voxelTip = escapeHtml(t('voxel_age_avg_tip', { key: sys.voxel_key, n: sys.voxel_age_count }));
-      voxelHtml = `<div class="system-card-voxel-age" title="${voxelTip}">${voxelText}</div>`;
+      voxelHtml = `<div class="system-card-voxel-age" title="${voxelTip}">${escapeHtml(voxelText)}</div>`;
     }
 
     card.innerHTML = `

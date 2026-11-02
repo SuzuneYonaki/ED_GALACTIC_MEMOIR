@@ -458,6 +458,39 @@ function getStarTypeName(starType, luminosity) {
   return baseName || starType;
 }
 
+// Stellar Age Formatter (Localizes million-year values to 億年/万年 in Japanese and Myr in English)
+function formatStellarAge(v, lang = null) {
+  const n = Number(v);
+  if (v === null || v === undefined || isNaN(n) || n < 0) return '';
+  const effectiveLang = lang || getAppLang();
+
+  if (effectiveLang === 'ja') {
+    if (n >= 100) {
+      // 100 MY = 1億年
+      const oku = n / 100;
+      if (oku >= 100) {
+        return `${Math.round(oku).toLocaleString()}億年`;
+      } else if (oku >= 10) {
+        return `${(Math.round(oku * 10) / 10).toLocaleString()}億年`;
+      } else {
+        const rounded = Math.round(oku * 100) / 100;
+        return `${rounded.toLocaleString()}億年`;
+      }
+    } else {
+      // 1億年未満 (1 MY = 100万年)
+      const man = Math.round(n * 100);
+      if (man >= 10000) {
+        return `${(man / 10000).toFixed(1)}億年`;
+      }
+      return `${man.toLocaleString()}万年`;
+    }
+  } else {
+    // English standard astronomical abbreviation
+    const rounded = n < 10 ? Math.round(n * 10) / 10 : Math.round(n);
+    return `${rounded.toLocaleString()} Myr`;
+  }
+}
+
 // Window / Global Export
 if (typeof window !== 'undefined') {
   window.getAppLang = getAppLang;
@@ -478,6 +511,7 @@ if (typeof window !== 'undefined') {
   window.formatSolarMass = formatSolarMass;
   window.formatStarSpectralClass = formatStarSpectralClass;
   window.getStarTypeName = getStarTypeName;
+  window.formatStellarAge = formatStellarAge;
 }
 
 if (typeof module !== 'undefined' && module.exports) {
@@ -499,7 +533,8 @@ if (typeof module !== 'undefined' && module.exports) {
     saveModuleSettings,
     formatSolarMass,
     formatStarSpectralClass,
-    getStarTypeName
+    getStarTypeName,
+    formatStellarAge
   };
 }
 
