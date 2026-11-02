@@ -342,7 +342,7 @@ function renderSystemList() {
       const massText = (mainMass && totMass && mainMass !== totMass)
         ? `⚖️ ${mainMass} / ${totMass} M☉`
         : `⚖️ ${mainMass || totMass} M☉`;
-      const massTip = (t('system_mass_badge_tip') || '主星重量: {main} M☉ / 星系総重量: {total} M☉')
+      const massTip = (t('system_mass_badge_tip') || '主星質量: {main} M☉ / 星系総質量: {total} M☉（※ M☉: 太陽質量）')
         .replace('{main}', mainMass || '--')
         .replace('{total}', totMass || mainMass || '--');
       massHtml = `<span class="system-card-mass" style="font-size: 0.7rem; color: #fbbf24;" title="${escapeHtml(massTip)}">${escapeHtml(massText)}</span>`;
@@ -703,12 +703,12 @@ function renderSystemHeader() {
     const mainMass = (typeof formatSolarMass === 'function') ? formatSolarMass(sys.main_star_mass) : (sys.main_star_mass ? Number(sys.main_star_mass).toFixed(2) : null);
     const totMass = (typeof formatSolarMass === 'function') ? formatSolarMass(sys.total_system_mass) : (sys.total_system_mass ? Number(sys.total_system_mass).toFixed(2) : null);
     if (mainMass || totMass) {
-      const tip = (t('system_mass_badge_tip') || '主星重量: {main} M☉ / 星系総重量: {total} M☉')
+      const tip = (t('system_mass_badge_tip') || '主星質量: {main} M☉ / 星系総質量: {total} M☉（※ M☉: 太陽質量）')
         .replace('{main}', mainMass || '--')
         .replace('{total}', totMass || mainMass || '--');
       let text = '';
       if (mainMass && totMass && mainMass !== totMass) {
-        text = (t('system_mass_header') || '⚖️ 主星: {main} M☉ | 総重量: {total} M☉')
+        text = (t('system_mass_header') || '⚖️ 主星: {main} M☉ | 総質量: {total} M☉')
           .replace('{main}', mainMass)
           .replace('{total}', totMass);
       } else {

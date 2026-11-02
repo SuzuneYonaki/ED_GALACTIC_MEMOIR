@@ -56,9 +56,9 @@
    - ジャンプイン、Honk（FSS）、DSS、着陸、生体スキャンを完全自動トラッキング。
    - 記録開始から現在地までの**累計ジャンプ距離（ly）**およびジャンプ回数をヘッダーに常時表示（ツールチップで初期星系からの直線距離も算出）。
    - FSSスキャン価値、DSSマッピング価値（効率ボーナス含む）、初回発見ボーナス（×2.6）、初回マッピングボーナスを精密算出。
-2. **🌌 銀河極値・限界到達記録 (Galactic Extremes)**:
-   - Sol (0, 0, 0) を原点とした、CMDR自身が実際に探査・訪問した限界到達星系の記録を照会可能。
-   - **銀盤北端 (+Z)**、**銀盤南端 (-Z)**、**銀盤東端 (+X)**、**銀盤西端 (-X)**、**銀盤天頂 (+Y)**、**銀盤天底 (-Y)**、および **Sol直線最遠到達点** をカード一覧表示。ワンクリックで対象星系へ即座にフォーカス・詳細確認が可能です。
+2. **🌌 旅の到達点 (Your Galactic Reach / 旧・銀河極値)**:
+   - 記録を競うのではなく、これまでの航海と思い出を振り返るための到達点ビュー。
+   - Sol (0, 0, 0) を原点とした、CMDR自身が実際に探査・訪問した限界境界（**北端 +Z**、**南端 -Z**、**東端 +X**、**西端 -X**、**天頂 +Y**、**天底 -Y**、および **Sol直線最遠到達点**）をカード一覧表示。ワンクリックで当時の詳細ログへ即座にフォーカス・確認が可能です。
 3. **🟢 グリーンガスジャイアント (GGG) 完全検知・保護**:
    - FSSスキャン時のCodexEntryイベントを解析し、該当星系内の真のガスジャイアント天体に正確に紐付け。
    - Systemマップでの確定GGGアイコン＆バッジ描画、ヘッダー統計での確定GGGカウント集計に対応。
@@ -76,6 +76,25 @@
    - 天体単位でのブックマーク登録、ユーザー定義通称（エイリアス）、リアルタイムプレビュー対応のMarkdownメモ（独立アコーディオン表示、永続化対応）。
 
 ---
+
+### 📖 画面の見方・指標ガイド (Reading System Cards & Indicators)
+
+星系カードや詳細画面ヘッダーに表示される各種天体物理指標の見方です：
+
+- **⚖️ 質量表示（M☉: 太陽質量）**:
+  - 表示例: `⚖️ 1.05 / 1.42 M☉`（主星質量: 1.05 M☉ / 星系総質量: 1.42 M☉）
+  - **`M☉`（ソーラーマス / 太陽質量）** とは、太陽1個分の質量（約 $1.989 \times 10^{30}$ kg）を `1.0 M☉` とする天文学の標準単位です。
+  - 「太陽何個分の重さ（質量）がある星系か」を直感的に把握できます（主星質量に加え、星系内に存在する全恒星およびガス惑星等の質量が合算されます）。
+- **⏳ 星系年齢（Stellar Age）**:
+  - 表示例: `45億年`、`9.96億年`、`4,500万年`（英語UIでは天文学の標準単位 `Myr` = Million Years / 百万年）。
+  - 主星（中心星）の観測データに基づく、星系誕生からの推定経過年数です。
+- **🌌 ボクセル平均星系年齢 & サンプル数（Voxel Avg System Age & Sample Size）**:
+  - 表示例: `ボクセル平均星系年齢: 45億年 (n=21星系)`
+  - **空間ボクセル（100光年立方）**: Elite Dangerous の星系命名規則（PGアルゴリズム）における空間単位グリッド（100光年四方）です。
+  - **平均星系年齢**: その空間ボクセル内でこれまでにCMDR自身が観測・記録した近隣星系の平均年齢です。
+  - **`n=...`（サンプル数）**: この平均値の集計母数となった観測星系のサンプル数を表します（例: `n=21星系` は21星系の観測データに基づく平均値）。
+
+
 
 <a name="english"></a>
 ## Overview (English)
@@ -107,9 +126,9 @@
 1. **Real-time Journal Tracking & Jump Distance**:
    - Automatic tracking of jumps, Honks, DSS mapping, touchdowns, and bio scans.
    - Cumulative jump distance (ly) and jump count displayed in header with origin straight-line distance tooltip.
-2. **🌌 Galactic Extremes & Boundary Records**:
-   - Track your furthest reached boundaries relative to Sol (0, 0, 0): **North (+Z)**, **South (-Z)**, **East (+X)**, **West (-X)**, **Zenith (+Y)**, **Nadir (-Y)**, and **Farthest Euclidean Distance**.
-   - Inspect boundary systems with a single click.
+2. **🌌 Your Galactic Reach (Journey Boundaries)**:
+   - Designed to cherish memories of your personal journey rather than a sterile leaderboard.
+   - Highlights the furthest boundary systems reached relative to Sol (0, 0, 0): **North (+Z)**, **South (-Z)**, **East (+X)**, **West (-X)**, **Zenith (+Y)**, **Nadir (-Y)**, and **Farthest Euclidean Distance**, with instant focus and inspection.
 3. **🟢 Confirmed Green Gas Giant (GGG) Detection**:
    - Flawlessly resolves FSS CodexEntry events to genuine gas giant bodies. Badges confirmed GGGs in the System Map and tallies cumulative counts in header statistics.
 4. **📡 Partial DSS Filter**:
@@ -120,6 +139,21 @@
    - Calculates species candidates, base value, and First Discovery 5x bonus.
 
 ---
+
+### 📖 Reading System Cards & Indicators
+
+- **⚖️ Mass Badges (`M☉`: Solar Mass)**:
+  - Example: `⚖️ 1.05 / 1.42 M☉` (Main Star Mass: 1.05 M☉ / System Total Mass: 1.42 M☉)
+  - **`M☉` (Solar Mass)** is the standard astronomical unit of mass, equal to the mass of our Sun (approx. $1.989 \times 10^{30}$ kg). It lets you immediately grasp the gravitational weight of a system compared to our own Sun.
+- **⏳ Stellar Age**:
+  - Formatted in `Myr` (Million Years) in English, and in `億年` / `万年` in Japanese. Indicates the estimated age elapsed since the main star's formation.
+- **🌌 Voxel Average System Age & Sample Size (`n=...`)**:
+  - Example: `Voxel Avg System Age: 4,500 Myr (n=21 systems)`
+  - **Spatial Voxel**: The 100-light-year cubic grid defined by Elite Dangerous's procedural star naming system.
+  - **Average System Age**: The mean stellar age calculated from neighboring systems logged in your local journal within that 100 ly voxel.
+  - **`n=...` (Sample Count)**: The number of logged systems used to compute the average (e.g. `n=21 systems` means an average across 21 observed systems).
+
+
 
 ## 🛠️ インストール & 実行方法 (Installation & Usage)
 
