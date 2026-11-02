@@ -143,28 +143,79 @@ function updateStaticTexts() {
   renderBodyInspector();
 }
 
+let lastCachedJumpStats = null;
+const JUMP_DIST_UNITS = ['ly', 'kly', 'Mly', 'Gly'];
+
+function formatJumpDistance(distLy, unit) {
+  if (typeof distLy !== 'number' || isNaN(distLy)) return '-- ly';
+  switch (unit) {
+    case 'kly':
+      return `${(distLy / 1e3).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 2 })} kly`;
+    case 'Mly':
+      return `${(distLy / 1e6).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 3 })} Mly`;
+    case 'Gly':
+      return `${(distLy / 1e9).toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 4 })} Gly`;
+    case 'ly':
+    default:
+      return `${distLy.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} ly`;
+  }
+}
+
+function getJumpUnitMode() {
+  try {
+    const saved = localStorage.getItem('ed_jump_unit_mode');
+    if (JUMP_DIST_UNITS.includes(saved)) return saved;
+  } catch (e) {}
+  return 'ly';
+}
+
+function setJumpUnitMode(unit) {
+  try {
+    localStorage.setItem('ed_jump_unit_mode', unit);
+  } catch (e) {}
+}
+
+function cycleJumpUnitMode() {
+  const current = getJumpUnitMode();
+  const nextIdx = (JUMP_DIST_UNITS.indexOf(current) + 1) % JUMP_DIST_UNITS.length;
+  const nextUnit = JUMP_DIST_UNITS[nextIdx];
+  setJumpUnitMode(nextUnit);
+  if (lastCachedJumpStats) {
+    updateHeaderJumpStats(lastCachedJumpStats);
+  }
+}
+
 function updateHeaderJumpStats(jumpStats) {
+  if (jumpStats) lastCachedJumpStats = jumpStats;
   const jumpDistEl = document.getElementById('stat-jump-dist');
   if (!jumpDistEl) return;
-  if (!jumpStats) {
+  if (!lastCachedJumpStats) {
     jumpDistEl.innerText = '-- ly';
     return;
   }
-  const totalDist = Number(jumpStats.total_jump_dist ?? 0);
-  const straightDist = jumpStats.straight_dist !== null && jumpStats.straight_dist !== undefined ? Number(jumpStats.straight_dist) : null;
-  const jumpCount = Number(jumpStats.jump_count ?? 0);
-  const initSys = jumpStats.initial_system || '初期星系';
-  const curSys = jumpStats.current_system || '現在星系';
+  const totalDist = Number(lastCachedJumpStats.total_jump_dist ?? 0);
+  const straightDist = lastCachedJumpStats.straight_dist !== null && lastCachedJumpStats.straight_dist !== undefined ? Number(lastCachedJumpStats.straight_dist) : null;
+  const jumpCount = Number(lastCachedJumpStats.jump_count ?? 0);
+  const initSys = lastCachedJumpStats.initial_system || '初期星系';
+  const curSys = lastCachedJumpStats.current_system || '現在星系';
+  const unit = getJumpUnitMode();
 
   if (totalDist > 0 || straightDist !== null) {
-    jumpDistEl.innerText = `${totalDist.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} ly`;
-    let tip = `🚀 累計ジャンプ距離: ${totalDist.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} ly (${jumpCount.toLocaleString()} ジャンプ)`;
+    jumpDistEl.innerText = formatJumpDistance(totalDist, unit);
+    const rawTotalFormatted = totalDist.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+    let tip = `🚀 累計ジャンプ距離: ${formatJumpDistance(totalDist, unit)} (${rawTotalFormatted} ly / ${jumpCount.toLocaleString()} Jumps)`;
     if (straightDist !== null) {
-      tip += `\n📏 直線距離: ${straightDist.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} ly\n(${initSys} ➔ ${curSys})`;
+      const rawStraightFormatted = straightDist.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+      tip += `\n📏 直線距離: ${formatJumpDistance(straightDist, unit)} (${rawStraightFormatted} ly)\n(${initSys} ➔ ${curSys})`;
     }
+    const cycleTip = t('tip_cycle_jump_unit') || '💡 クリックして単位切替 (ly ➔ kly ➔ Mly ➔ Gly)';
+    tip += `\n\n${cycleTip}`;
     jumpDistEl.title = tip;
     const container = document.getElementById('stat-jump-dist-container');
-    if (container) container.title = tip;
+    if (container) {
+      container.title = tip;
+      container.style.cursor = 'pointer';
+    }
   } else {
     jumpDistEl.innerText = '-- ly';
   }
@@ -2512,6 +2563,16 @@ document.addEventListener('DOMContentLoaded', () => {
   initLayoutSwitcher();
   initPaneManager(); // Initializes both collapse and drag resizers
   initHeaderStatsCollapse();
+
+  // Header jump distance click: cycle unit mode (ly -> kly -> Mly -> Gly)
+  const jumpDistContainer = document.getElementById('stat-jump-dist-container');
+  if (jumpDistContainer) {
+    jumpDistContainer.style.cursor = 'pointer';
+    jumpDistContainer.addEventListener('click', (e) => {
+      e.stopPropagation();
+      cycleJumpUnitMode();
+    });
+  }
   if (typeof initSystemCardKeyboardNavigation === 'function') {
     initSystemCardKeyboardNavigation();
   }

@@ -169,3 +169,21 @@ def test_app_js_handles_jump_stats():
     assert "function updateHeaderJumpStats(" in content
     assert "stat-jump-dist" in content
     assert "stat-jump-dist-container" in content
+
+def test_jump_dist_unit_cycle_logic():
+    """Verifies that app.js contains the unit cycle logic for Total Jumps (ly -> kly -> Mly -> Gly)."""
+    app_js_file = Path("app/ui/js/app.js")
+    content = app_js_file.read_text(encoding="utf-8")
+
+    assert "formatJumpDistance(" in content
+    assert "cycleJumpUnitMode(" in content
+    assert "JUMP_DIST_UNITS" in content
+    assert "'kly'" in content
+    assert "'Mly'" in content
+    assert "'Gly'" in content
+    assert "ed_jump_unit_mode" in content
+
+    # Verify i18n key exists
+    i18n_content = Path("app/ui/js/i18n.js").read_text(encoding="utf-8")
+    assert "tip_cycle_jump_unit" in i18n_content
+
