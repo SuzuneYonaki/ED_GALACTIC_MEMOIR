@@ -1,3 +1,4 @@
+from pathlib import Path
 import pytest
 import sqlite3
 from fastapi.testclient import TestClient
@@ -109,3 +110,23 @@ def test_galactic_extremes_endpoint(test_client):
     # Farthest
     assert ext["farthest"]["star_system"] == "Beagle Point"
     assert ext["farthest"]["distance_sol"] > 65000.0
+
+def test_reach_ui_labels_and_i18n():
+    root = Path(__file__).resolve().parent.parent
+    i18n_code = (root / "app" / "ui" / "js" / "i18n.js").read_text(encoding="utf-8")
+    header_html = (root / "app" / "ui" / "components" / "header.html").read_text(encoding="utf-8")
+    left_html = (root / "app" / "ui" / "components" / "left_pane.html").read_text(encoding="utf-8")
+    modals_html = (root / "app" / "ui" / "components" / "modals.html").read_text(encoding="utf-8")
+
+    # 1. Verify i18n has warm "Reach" / "旅の到達点" wording
+    assert 'btn_galactic_extremes: "旅の到達点"' in i18n_code
+    assert 'btn_galactic_extremes_short: "到達点"' in i18n_code
+    assert 'btn_galactic_extremes: "Your Reach"' in i18n_code
+    assert 'btn_galactic_extremes_short: "Reach"' in i18n_code
+    assert 'Your Galactic Reach' in i18n_code
+
+    # 2. Verify HTML files use the updated default texts
+    assert '旅の到達点' in header_html
+    assert '到達点' in left_html
+    assert '旅の到達点' in modals_html
+
