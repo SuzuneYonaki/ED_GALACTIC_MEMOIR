@@ -92,5 +92,6 @@ def test_voxel_ui_wiring():
     css = (base / "css" / "style.css").read_text(encoding="utf-8")
     assert "voxel_age_avg_my" in sys_list and "system-card-voxel-age" in sys_list
     assert ".system-card-voxel-age" in css
-    for key in ("voxel_age_avg", "voxel_age_avg_tip"):
+    for key in ("voxel_age_avg", "voxel_age_avg_tip", "voxel_sample_n"):
         assert i18n_js.count(f"{key}:") == 2  # ja + en
+    assert "voxel_sample_n" in sys_list

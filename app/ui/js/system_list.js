@@ -354,7 +354,8 @@ function renderSystemList() {
       ? formatStellarAge(sys.voxel_age_avg_my)
       : (sys.voxel_age_avg_my != null ? `${sys.voxel_age_avg_my} Myr` : '');
     if (voxelAvgDisplay && sys.voxel_age_count >= 2) {
-      const voxelText = `${t('voxel_age_avg')}: ${voxelAvgDisplay} (n=${sys.voxel_age_count})`;
+      const sampleCountStr = t('voxel_sample_n', { n: sys.voxel_age_count }, `n=${sys.voxel_age_count}`);
+      const voxelText = `${t('voxel_age_avg')}: ${voxelAvgDisplay} (${sampleCountStr})`;
       const voxelTip = escapeHtml(t('voxel_age_avg_tip', { key: sys.voxel_key, n: sys.voxel_age_count }));
       voxelHtml = `<div class="system-card-voxel-age" title="${voxelTip}">${escapeHtml(voxelText)}</div>`;
     }
