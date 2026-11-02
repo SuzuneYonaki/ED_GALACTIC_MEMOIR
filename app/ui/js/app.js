@@ -108,6 +108,7 @@ function updateStaticTexts() {
   }
 
   if (typeof window.refreshAgeChips === 'function') window.refreshAgeChips();
+  updateHeaderPeriodLabel();
 
   // Update language buttons
   const btnJa = document.getElementById('btn-lang-ja');
@@ -173,6 +174,22 @@ function updateHeaderJumpStats(jumpStats) {
 let statsRetryTimeout = null;
 let systemsRetryTimeout = null;
 
+function updateHeaderPeriodLabel() {
+  const periodLabelEl = document.getElementById('header-logged-period');
+  if (!periodLabelEl) return;
+  if (!state.dateFrom && !state.dateTo) {
+    periodLabelEl.innerText = t('stat_period_all') || '全期間';
+  } else if (state.dateFrom && !state.dateTo) {
+    const tpl = t('stat_period_from_today') || '{from} 〜 今日';
+    periodLabelEl.innerText = tpl.replace('{from}', state.dateFrom);
+  } else if (!state.dateFrom && state.dateTo) {
+    const tpl = t('stat_period_beginning_to') || '最初 〜 {to}';
+    periodLabelEl.innerText = tpl.replace('{to}', state.dateTo);
+  } else {
+    periodLabelEl.innerText = `${state.dateFrom} 〜 ${state.dateTo}`;
+  }
+}
+
 async function fetchGlobalStats() {
   try {
     const params = new URLSearchParams();
@@ -219,18 +236,7 @@ async function fetchGlobalStats() {
     }
 
     // Update Header Period Label
-    const periodLabelEl = document.getElementById('header-logged-period');
-    if (periodLabelEl) {
-      if (!state.dateFrom && !state.dateTo) {
-        periodLabelEl.innerText = '全期間';
-      } else if (state.dateFrom && !state.dateTo) {
-        periodLabelEl.innerText = `${state.dateFrom} 〜 今日`;
-      } else if (!state.dateFrom && state.dateTo) {
-        periodLabelEl.innerText = `最初 〜 ${state.dateTo}`;
-      } else {
-        periodLabelEl.innerText = `${state.dateFrom} 〜 ${state.dateTo}`;
-      }
-    }
+    updateHeaderPeriodLabel();
 
     // CMDR Current Location
     const cmdrLocEl = document.getElementById('stat-cmdr-loc');
