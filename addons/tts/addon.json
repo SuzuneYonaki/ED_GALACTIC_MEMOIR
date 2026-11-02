@@ -1,0 +1,8 @@
+{
+  "id": "tts",
+  "name": "音声読み上げ (TTS)",
+  "version": "1.0.0",
+  "description": "グリーンガスジャイアント検出や高額生物反応などのアラートを音声で読み上げます。VOICEVOXまたはブラウザの音声合成機能を使用します。",
+  "entry": "addon.py",
+  "enabled_by_default": false
+}

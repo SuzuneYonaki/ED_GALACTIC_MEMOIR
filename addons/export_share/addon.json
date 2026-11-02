@@ -1,0 +1,8 @@
+{
+  "id": "export_share",
+  "name": "エクスポート & 共有",
+  "version": "1.0.0",
+  "description": "星系データをWeb共有用HTML・SNS投稿用画像・共有パッケージ(.edsys)として書き出したり、他プレイヤーが共有したパッケージを読み込んだりします。",
+  "entry": "addon.py",
+  "enabled_by_default": false
+}

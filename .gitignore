@@ -1,0 +1,66 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local SQLite Database & logs
+/data/
+/exports/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# PyInstaller build artifacts
+build/
+dist/
+dist_new/
+*.spec.bak
+
+# Pytest / Virtual environment
+.pytest_cache/
+.venv/
+venv/
+ENV/
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# Temporary research & test files
+*.log
+*.htm
+*.zip
+*.eop
+BioInsights_extracted/
+species/
+
+# Release summaries (kept locally for GitHub Releases drafting)
+RELEASE_SUMMARY*.md
+RELEASE_NOTES*.md
+RELEASE_NOTES.md
+
+# Scratch scripts & temporary verification files
+/scratch/
+scratch_*.py
+
+# External sub-projects & standalone tools
+/star_mapper/
+run_star_mapper.py
+
+# Development notes & research extractions
+agent.md
+INTEROPERABILITY_DESIGN.md
+rhino_field_guide_extracted.md
+
+# Editor & AI assistant rule/state files
+.cursorrules
+.windsurfrules
+.instructions.md
+.antigravity
+.antigravity.md
+.aider*
+# Local exploration & analysis scripts
+ggg_*.py
+mass_code_body_analysis.py
+

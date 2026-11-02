@@ -1,0 +1,8 @@
+{
+  "id": "exobiology_prediction",
+  "name": "生体種予測",
+  "version": "1.0.0",
+  "description": "惑星の環境データから、生息する可能性のある生物種と推定報酬額を予測します。",
+  "entry": "addon.py",
+  "enabled_by_default": false
+}

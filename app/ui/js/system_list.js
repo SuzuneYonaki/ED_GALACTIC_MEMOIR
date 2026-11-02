@@ -1,0 +1,1309 @@
+/**
+ * system_list.js - System Navigation, Filtering, Landmark Distances & Collapsible Groups
+ * Elite Dangerous Journal Analyzer
+ */
+
+// Landmark Display Settings & Badge Generator
+const defaultLandmarkSettings = {
+  cmdr: true,
+  sol: true,
+  colonia: true,
+  rainbow: true,
+  eanch: true
+};
+
+function getLandmarkSettings() {
+  try {
+    const raw = localStorage.getItem('ed_landmark_settings');
+    if (raw) {
+      return { ...defaultLandmarkSettings, ...JSON.parse(raw) };
+    }
+  } catch (e) {
+    console.warn('Failed to load landmark settings:', e);
+  }
+  return { ...defaultLandmarkSettings };
+}
+
+function saveLandmarkSettings(settings) {
+  try {
+    localStorage.setItem('ed_landmark_settings', JSON.stringify(settings));
+  } catch (e) {
+    console.warn('Failed to save landmark settings:', e);
+  }
+}
+
+function generateLandmarkDistanceBadges(sys) {
+  const lmSettings = getLandmarkSettings();
+  const badges = [];
+
+  // CMDR distance
+  if (lmSettings.cmdr && sys.cmdr_distance_ly !== null && sys.cmdr_distance_ly !== undefined) {
+    const cmdrSys = state.currentLocation && state.currentLocation.star_system ? ` (${state.currentLocation.star_system})` : '';
+    const tip = (t('lm_cmdr_dist_tip') || '現在地{cmdrSys}からの距離: {dist} Ly')
+      .replace('{cmdrSys}', cmdrSys)
+      .replace('{dist}', Math.round(sys.cmdr_distance_ly).toLocaleString());
+    badges.push(`<span class="tag-badge tag-cmdr-dist" title="${tip}">📍 CMDR: ${Math.round(sys.cmdr_distance_ly).toLocaleString()} Ly</span>`);
+  }
+
+  // Sol distance
+  if (lmSettings.sol) {
+    const solDist = (sys.sol_distance_ly !== undefined && sys.sol_distance_ly !== null && sys.sol_distance_ly > 0)
+      ? sys.sol_distance_ly
+      : ((sys.star_pos_x != null && sys.star_pos_y != null && sys.star_pos_z != null)
+        ? Math.hypot(sys.star_pos_x, sys.star_pos_y, sys.star_pos_z)
+        : null);
+    if (solDist !== null && solDist !== undefined) {
+      const tip = (t('lm_sol_dist_tip') || '太陽系 (Sol) からの距離: {dist} Ly')
+        .replace('{dist}', Math.round(solDist).toLocaleString());
+      badges.push(`<span class="tag-badge tag-sol-dist" title="${tip}">Sol: ${Math.round(solDist).toLocaleString()} Ly</span>`);
+    }
+  }
+
+  // Colonia distance
+  if (lmSettings.colonia) {
+    const coloniaDist = (sys.colonia_distance_ly !== undefined && sys.colonia_distance_ly !== null)
+      ? sys.colonia_distance_ly
+      : ((sys.star_pos_x != null && sys.star_pos_y != null && sys.star_pos_z != null)
+        ? Math.hypot(sys.star_pos_x - (-9530.5), sys.star_pos_y - (-910.28125), sys.star_pos_z - 19808.125)
+        : null);
+    if (coloniaDist !== null && coloniaDist !== undefined) {
+      const tip = (t('lm_colonia_dist_tip') || '第2の人類居住圏 (Colonia) からの距離: {dist} Ly')
+        .replace('{dist}', Math.round(coloniaDist).toLocaleString());
+      badges.push(`<span class="tag-badge tag-colonia-dist" title="${tip}">Colonia: ${Math.round(coloniaDist).toLocaleString()} Ly</span>`);
+    }
+  }
+
+  // Rainbow's End distance
+  if (lmSettings.rainbow) {
+    const rbDist = (sys.rainbows_end_distance_ly !== undefined && sys.rainbows_end_distance_ly !== null)
+      ? sys.rainbows_end_distance_ly
+      : ((sys.star_pos_x != null && sys.star_pos_y != null && sys.star_pos_z != null)
+        ? Math.hypot(sys.star_pos_x - 21481.40625, sys.star_pos_y - (-1004.5625), sys.star_pos_z - 43369.4375)
+        : null);
+    if (rbDist !== null && rbDist !== undefined) {
+      const tip = (t('lm_rainbow_dist_tip') || "最遠方宇宙港 Rainbow's End (Roefoo ZE-H d10-0 / DW3) からの距離: {dist} Ly")
+        .replace('{dist}', Math.round(rbDist).toLocaleString());
+      badges.push(`<span class="tag-badge tag-rainbow-dist" title="${tip}">Rainbow's End: ${Math.round(rbDist).toLocaleString()} Ly</span>`);
+    }
+  }
+
+  // Explorer's Anchorage distance
+  if (lmSettings.eanch) {
+    const eaDist = (sys.explorers_anchorage_distance_ly !== undefined && sys.explorers_anchorage_distance_ly !== null)
+      ? sys.explorers_anchorage_distance_ly
+      : ((sys.star_pos_x != null && sys.star_pos_y != null && sys.star_pos_z != null)
+        ? Math.hypot(sys.star_pos_x - 28.6875, sys.star_pos_y - (-19.78125), sys.star_pos_z - 25899.6875)
+        : null);
+    if (eaDist !== null && eaDist !== undefined) {
+      const tip = (t('lm_eanch_dist_tip') || "銀河中心探査基地 Explorer's Anchorage (Stuemeae FG-Y d7561 / Sgr A*近傍) からの距離: {dist} Ly")
+        .replace('{dist}', Math.round(eaDist).toLocaleString());
+      badges.push(`<span class="tag-badge tag-eanch-dist" title="${tip}">E.Anchorage: ${Math.round(eaDist).toLocaleString()} Ly</span>`);
+    }
+  }
+
+  return badges;
+}
+
+function updateCurrentSystemDistances(sys) {
+  const distEl = document.getElementById('current-system-distances');
+  if (distEl && sys) {
+    const badges = generateLandmarkDistanceBadges(sys);
+    distEl.innerHTML = badges.join('');
+  }
+}
+
+// Rendering
+function renderSystemList() {
+  const container = document.getElementById('system-list');
+  container.innerHTML = '';
+
+  if (state.systems.length === 0) {
+    container.innerHTML = `<div style="color: var(--text-secondary); text-align: center; padding: 20px;">${t('no_systems')}</div>`;
+    return;
+  }
+
+  state.systems.forEach(sys => {
+    const card = document.createElement('div');
+    card.className = `system-card ${state.selectedSystem && state.selectedSystem.system_address === sys.system_address ? 'selected' : ''}`;
+    card.dataset.sysAddr = sys.system_address;
+    card.tabIndex = 0;
+    if (typeof card.setAttribute === 'function') {
+      card.setAttribute('tabindex', '0');
+    }
+    card.onclick = () => selectSystem(sys.system_address);
+    if (typeof card.addEventListener === 'function') {
+      card.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          selectSystem(sys.system_address);
+        }
+      });
+    }
+
+    const tags = [];
+    if (sys.has_first_discover || sys.first_discovered_bodies > 0) {
+      tags.push(`<span class="tag-badge tag-first-disc">⭐ 1st Disc (${sys.first_discovered_bodies || 'Yes'})</span>`);
+    }
+    if (sys.has_elw) tags.push('<span class="tag-badge tag-elw">ELW</span>');
+    if (sys.has_water_world) tags.push('<span class="tag-badge tag-ww">WW</span>');
+    if (sys.has_ammonia) tags.push('<span class="tag-badge tag-ammonia">Ammonia</span>');
+    if (sys.has_terraformable) tags.push('<span class="tag-badge tag-tf">TF</span>');
+    if (sys.has_ggg) tags.push('<span class="tag-badge tag-ggg" style="background: rgba(16, 185, 129, 0.25); color: #34d399; border: 1px solid #10b981; font-weight: bold;">🟢 GGG</span>');
+    
+    const modSettings = getModuleSettings();
+    if (modSettings.exobiology !== false) {
+      if (sys.total_bio_signals > 0) tags.push(`<span class="tag-badge tag-bio">BIO: ${sys.total_bio_signals}</span>`);
+      else if (sys.has_bio) tags.push('<span class="tag-badge tag-bio">BIO</span>');
+    }
+    
+    // Configurable Key Galactic Distances (CMDR, Sol, Colonia, Rainbow's End, Explorer's Anchorage)
+    const distanceBadges = generateLandmarkDistanceBadges(sys);
+
+    // EDSM Discovery Status Badges & 1st Discover Registerable Announcement
+    if (sys.edsm_checked === 1) {
+      if (sys.edsm_registered === 1) {
+        const discText = sys.edsm_first_discoverer ? `⭐ EDSM: ${sys.edsm_first_discoverer}` : (t('edsm_found_badge') || '⭐ EDSM登録済');
+        const tip = (t('edsm_found_tip') || 'EDSM登録済 / 発見者: {discoverer}').replace('{discoverer}', sys.edsm_first_discoverer || (t('edsm_unknown_discoverer') || '不明'));
+        tags.push(`<span class="tag-badge tag-edsm-found" title="${tip}">${discText}</span>`);
+      } else {
+        tags.push(`<span class="tag-badge tag-edsm-unreg" title="${t('edsm_unreg_full_tip') || 'EDSM未登録 / あなたの探査データを提出して1st Discoverを登録できます！'}">${t('edsm_unreg_full_badge') || '✨ 1st Discover 登録可能 (EDSM未登録)'}</span>`);
+      }
+    } else if (sys.has_first_discover || (sys.first_discovered_bodies && sys.first_discovered_bodies > 0)) {
+      tags.push(`<span class="tag-badge tag-edsm-unreg" title="${t('edsm_first_disc_tip') || 'ゲーム内初発見 / EDSM 1st Discover 登録可能'}">${t('badge_first_discover') || '✨ 1st Discover 登録可能'}</span>`);
+    }
+
+    // EDSM System State (Boom, Investment)
+    if (sys.system_state && sys.system_state.toLowerCase().includes('boom')) {
+      tags.push(`<span class="tag-badge" style="background: rgba(34, 197, 94, 0.2); color: #22c55e; border: 1px solid #22c55e; font-weight: bold;" title="${t('edsm_boom_tip') || 'EDSM星系経済状態: Boom (好況)'}">📈 Boom</span>`);
+    } else if (sys.system_state && sys.system_state.toLowerCase().includes('investment')) {
+      tags.push(`<span class="tag-badge" style="background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid #38bdf8; font-weight: bold;" title="${t('edsm_investment_tip') || 'EDSM星系状態: Investment (投資)'}">💼 Investment</span>`);
+    }
+
+    // Mining Scout Candidate Badges
+    if (sys.mining_scout_grade === 'High') {
+      tags.push('<span class="tag-badge badge-scout-high" title="Mining Scout High (Pristine + Metallic Rings)">⛏️ Scout: High</span>');
+    } else if (sys.mining_scout_grade === 'Medium') {
+      tags.push('<span class="tag-badge badge-scout-medium" title="Mining Scout Medium (Pristine + Icy Rings)">⛏️ Scout: Med</span>');
+    }
+
+    if (sys.is_partial_dss) {
+      const uMapped = sys.user_mapped_bodies || 0;
+      const mTotal = sys.mappable_bodies || sys.total_bodies || 0;
+      const dssCount = mTotal > 0 ? ` (${uMapped}/${mTotal})` : (uMapped > 0 ? ` (${uMapped})` : '');
+      const dssTip = (t('tip_partial_dss') || '一部天体のみDSS完了（未マッピング天体あり）') + dssCount;
+      tags.push(`<span class="tag-badge tag-partial-dss" title="${dssTip}">📡 ${t('tag_partial_dss') || '一部DSS'}${dssCount}</span>`);
+    }
+
+    if (sys.has_high_g) tags.push('<span class="tag-badge tag-high-g">High-G</span>');
+    if (sys.has_anomalies) tags.push('<span class="tag-badge tag-anomaly">Rare/Orbit</span>');
+    if (sys.bookmarks && sys.bookmarks.length > 0) {
+      const firstBm = sys.bookmarks[0];
+      const bmText = firstBm.alias_name ? `🔖 ${firstBm.alias_name}` : `🔖 ${firstBm.body_name}`;
+      const moreBm = sys.bookmarks.length > 1 ? ` (+${sys.bookmarks.length - 1})` : '';
+      const bmTip = sys.bookmarks.map(b => (b.alias_name ? `[${b.alias_name}] ` : '') + b.body_name + (b.note_snippet ? `: ${b.note_snippet}` : '')).join('\n');
+      tags.push(`<span class="tag-badge tag-bookmark" title="${bmTip}">${bmText}${moreBm}</span>`);
+    }
+    if (sys.is_shared) {
+      const sharedTip = sys.shared_by ? `${t('shared_by_label')}: ${sys.shared_by}` : t('shared_system');
+      tags.push(`<span class="tag-badge tag-shared" style="background: rgba(167, 139, 250, 0.2); color: #c4b5fd; border: 1px solid rgba(167, 139, 250, 0.6); font-weight: bold;" title="${sharedTip}">🤝 Shared</span>`);
+    }
+    if (!sys.visit_count) {
+      tags.push(`<span class="tag-badge tag-external" style="background: rgba(56, 189, 248, 0.18); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.5); font-weight: bold;" title="${t('badge_external_unvisited_tip') || '未訪問・EDSM外部参照星系（Web共有/パッケージ書出は不可）'}">${t('badge_external_unvisited') || '🌐 外部参照 (未訪問)'}</span>`);
+    }
+    if (sys.composite_score !== null && sys.composite_score !== undefined) {
+      const compTip = (t('composite_score_tip') || '総合ブレンドスコア: {score}pt').replace('{score}', sys.composite_score);
+      const compLabel = (t('badge_score') || '★ スコア: {score}pt').replace('{score}', Math.round(sys.composite_score));
+      tags.push(`<span class="tag-badge" style="background: rgba(0, 255, 136, 0.18); color: #00ff88; border: 1px solid rgba(0, 255, 136, 0.5); font-weight: bold;" title="${compTip}">${compLabel}</span>`);
+    }
+    if (sys.rarity_score !== null && sys.rarity_score !== undefined) {
+      const rScore = Math.round(sys.rarity_score * 10) / 10;
+      let rClass = 'rarity-score-normal';
+      let rLabel = t('physics_normal');
+      if (rScore >= 95) {
+        rClass = 'rarity-score-legendary';
+        rLabel = t('physics_legendary');
+      } else if (rScore >= 80) {
+        rClass = 'rarity-score-epic';
+        rLabel = t('physics_epic');
+      } else if (rScore >= 60) {
+        rClass = 'rarity-score-rare';
+        rLabel = t('physics_rare');
+      }
+      const rarityTip = (t('astro_rarity_tip') || 'ED_Analysys 天体物理レア度: {score} pt [{label}]')
+        .replace('{score}', rScore)
+        .replace('{label}', rLabel);
+      tags.unshift(`<span class="tag-badge ${rClass}" title="${rarityTip}">🌌 ★ ${rScore} pt</span>`);
+    }
+
+    const visitedDate = sys.last_visited ? sys.last_visited.substring(0, 10) : '--';
+    let mainStar = '';
+    if (sys.main_star_type) {
+      const style = getStarTypeStyle(sys.main_star_type);
+      const sub = (sys.main_star_subclass !== null && sys.main_star_subclass !== undefined) ? String(sys.main_star_subclass) : '';
+      const lumClass = (sys.main_star_luminosity || '').trim();
+      const starLabel = (typeof formatStarSpectralClass === 'function')
+        ? formatStarSpectralClass(sys.main_star_type, sub, lumClass)
+        : (lumClass ? `${sys.main_star_type}${sub} ${lumClass}` : `${sys.main_star_type}${sub}`);
+
+      const starNameDesc = (typeof getStarTypeName === 'function') ? getStarTypeName(sys.main_star_type, lumClass) : '';
+      const tipParts = [`主星: ${starLabel}${starNameDesc ? ` (${starNameDesc})` : ''}`];
+      if (sys.main_star_absolute_magnitude !== null && sys.main_star_absolute_magnitude !== undefined) {
+        tipParts.push(`絶対等級: ${Number(sys.main_star_absolute_magnitude).toFixed(1)} Mag`);
+      }
+      const starTip = escapeHtml(tipParts.join(' | '));
+      mainStar = `<span class="tag-badge" style="background: ${style.bg}; color: ${style.text}; border: 1px solid ${style.border}; margin-left: 6px; font-weight: bold;" title="${starTip}">${starLabel}</span>`;
+    }
+
+    const sysName = sys.star_system || (`System ${sys.system_address || ''}`);
+    const coordsStr = (sys.star_pos_x != null && sys.star_pos_y != null && sys.star_pos_z != null)
+      ? `[${sys.star_pos_x.toFixed(6)}, ${sys.star_pos_y.toFixed(6)}, ${sys.star_pos_z.toFixed(6)}]`
+      : '';
+
+    let distanceHtml = '';
+    if (distanceBadges.length > 0) {
+      distanceHtml = `
+        <div class="system-distance-bar">
+          ${distanceBadges.join('')}
+        </div>
+      `;
+    }
+
+    // Quick Landable Bodies Visual Bar
+    let landableHtml = '';
+    if (modSettings.rhino !== false && typeof getMatchedLandableBodies === 'function') {
+      const matchedBodies = getMatchedLandableBodies(sys);
+      if (matchedBodies && matchedBodies.length > 0) {
+        const landableBadges = matchedBodies.slice(0, 6).map(lb => {
+          let icon = '🪐';
+          let colorStyle = 'background: rgba(203, 213, 225, 0.12); color: #cbd5e1; border: 1px solid rgba(203, 213, 225, 0.35);';
+          if (lb.type === 'HMC') {
+            colorStyle = 'background: rgba(96, 165, 250, 0.15); color: #60a5fa; border: 1px solid rgba(96, 165, 250, 0.4);';
+          } else if (lb.type === 'MR') {
+            colorStyle = 'background: rgba(251, 146, 60, 0.15); color: #fb923c; border: 1px solid rgba(251, 146, 60, 0.4);';
+          } else if (lb.type === 'Icy') {
+            icon = '❄️';
+            colorStyle = 'background: rgba(103, 232, 249, 0.15); color: #67e8f9; border: 1px solid rgba(103, 232, 249, 0.4);';
+          } else if (lb.type === 'RockyIce') {
+            icon = '🧊';
+            colorStyle = 'background: rgba(147, 197, 253, 0.15); color: #93c5fd; border: 1px solid rgba(147, 197, 253, 0.4);';
+          }
+          const isRing = Boolean(lb.has_rings);
+          const statParts = [];
+          if (state.showMiningGravity && lb.gravity_g !== null && lb.gravity_g !== undefined) {
+            statParts.push(`${lb.gravity_g.toFixed(2)}G`);
+          }
+          if (state.showMiningTemp && lb.temp_k !== null && lb.temp_k !== undefined) {
+            statParts.push(`${lb.temp_k}K`);
+          }
+          const statSuffix = statParts.length > 0 ? ` [${statParts.join(' | ')}]` : '';
+
+          const ringStr = isRing ? (t('ringed_tag') || ' | 環付き (Ringed)') : '';
+          const miningStr = lb.mining_signals > 0 ? (t('mining_sites_tip_tag') || ' | 採掘拠点: {count}箇所').replace('{count}', lb.mining_signals) : '';
+          const tip = (t('landable_tip') || '{name} ({type}) - 重力: {gravity} | 温度: {temp}{ring}{mining}')
+            .replace('{name}', lb.body_name)
+            .replace('{type}', lb.type)
+            .replace('{gravity}', lb.gravity_g ? lb.gravity_g.toFixed(2) + 'G' : '--')
+            .replace('{temp}', lb.temp_k ? lb.temp_k + 'K' : '--')
+            .replace('{ring}', ringStr)
+            .replace('{mining}', miningStr);
+          return `<span class="tag-badge" style="${colorStyle} font-size: 0.67rem; padding: 1px 4px; margin-right: 2px;" title="${tip}">${icon} ${lb.type}${statSuffix}</span>`;
+        });
+        if (matchedBodies.length > 6) {
+          const countDiff = matchedBodies.length - 6;
+          const moreTip = (t('other_matched_bodies_tip') || '他 {count} 件のマッチ天体').replace('{count}', countDiff);
+          landableBadges.push(`<span class="tag-badge" style="background: rgba(255,255,255,0.06); color: var(--text-dim); font-size: 0.65rem; padding: 1px 4px;" title="${moreTip}">+${countDiff}</span>`);
+        }
+        landableHtml = `
+          <div class="system-landable-bar" style="display: flex; flex-wrap: wrap; gap: 2px; margin-top: 4px; padding-top: 3px; border-top: 1px dashed rgba(255,255,255,0.07);">
+            ${landableBadges.join('')}
+          </div>
+        `;
+      }
+    }
+
+    const formatAgeMy = (v) => {
+      const n = Number(v);
+      if (v === null || v === undefined || isNaN(n) || n < 0) return '';
+      return (n < 10 ? Math.round(n * 10) / 10 : Math.round(n)).toLocaleString();
+    };
+    const ageDisplay = formatAgeMy(sys.system_age_my);
+    const ageFormatted = ageDisplay ? `${t('system_age')}: ${ageDisplay} ${t('my_unit')}` : '';
+    const ageHtml = ageFormatted ? `<span class="system-card-age" title="${ageFormatted}">${ageFormatted}</span>` : '';
+
+    const mainMass = (typeof formatSolarMass === 'function') ? formatSolarMass(sys.main_star_mass) : null;
+    const totMass = (typeof formatSolarMass === 'function') ? formatSolarMass(sys.total_system_mass) : null;
+    let massHtml = '';
+    if (mainMass || totMass) {
+      const massText = (mainMass && totMass && mainMass !== totMass)
+        ? `⚖️ ${mainMass} / ${totMass} M☉`
+        : `⚖️ ${mainMass || totMass} M☉`;
+      const massTip = (t('system_mass_badge_tip') || '主星重量: {main} M☉ / 星系総重量: {total} M☉')
+        .replace('{main}', mainMass || '--')
+        .replace('{total}', totMass || mainMass || '--');
+      massHtml = `<span class="system-card-mass" style="font-size: 0.7rem; color: #fbbf24;" title="${escapeHtml(massTip)}">${escapeHtml(massText)}</span>`;
+    }
+
+    // Average age of logged systems sharing this system's voxel code (needs 2+ samples to be informative)
+    let voxelHtml = '';
+    const voxelAvgDisplay = formatAgeMy(sys.voxel_age_avg_my);
+    if (voxelAvgDisplay && sys.voxel_age_count >= 2) {
+      const voxelText = `${t('voxel_age_avg')}: ${voxelAvgDisplay} ${t('my_unit')} (n=${sys.voxel_age_count})`;
+      const voxelTip = escapeHtml(t('voxel_age_avg_tip', { key: sys.voxel_key, n: sys.voxel_age_count }));
+      voxelHtml = `<div class="system-card-voxel-age" title="${voxelTip}">${voxelText}</div>`;
+    }
+
+    card.innerHTML = `
+      <div class="system-card-header">
+        <span class="system-card-title" title="${sysName}">${sysName}</span>
+        <span class="system-card-value">${formatCredits(sys.total_potential_value)}</span>
+      </div>
+      <div class="system-card-sub-header">
+        ${coordsStr ? `<span class="system-coords" title="${coordsStr}">${coordsStr}</span>` : '<span></span>'}
+        <span class="system-card-visited">${t('visited_meta')}: ${visitedDate} (${sys.visit_count}${t('times')})</span>
+      </div>
+      <div class="system-card-meta">
+        <span class="system-card-meta-left">${t('bodies_count')}: ${sys.scanned_bodies} / ${sys.total_bodies || '?'}${mainStar}</span>
+        ${massHtml}
+        ${ageHtml}
+      </div>
+      ${voxelHtml}
+      <div class="system-card-tags">
+        ${tags.join('')}
+      </div>
+      ${distanceHtml}
+      ${landableHtml}
+    `;
+
+    container.appendChild(card);
+  });
+}
+
+function highlightSelectedSystemCard() {
+  document.querySelectorAll('.system-card').forEach(card => {
+    if (state.selectedSystem && card.dataset.sysAddr == state.selectedSystem.system_address) {
+      card.classList.add('selected');
+    } else {
+      card.classList.remove('selected');
+    }
+  });
+}
+
+function scrollToTopOfSystemCards() {
+  const container = document.getElementById('system-list');
+  if (!container) return;
+
+  if (state.uiLayoutMode === '2col') {
+    container.scrollTo({ top: 0, behavior: 'smooth' });
+  } else {
+    const firstCard = container.querySelector('.system-card');
+    if (firstCard) {
+      firstCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } else {
+      container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }
+}
+
+let isNavigatingSystemCards = false;
+
+function isInputOrModalActive(e) {
+  const target = (e && e.target) ? e.target : document.activeElement;
+  if (!target) return false;
+  const tag = (target.tagName || '').toUpperCase();
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+  if (target.isContentEditable) return true;
+
+  const modalOverlays = document.querySelectorAll('.modal-overlay');
+  for (const modal of modalOverlays) {
+    if (modal.offsetParent !== null || (window.getComputedStyle && window.getComputedStyle(modal).display !== 'none')) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function focusCardByIndex(index) {
+  const container = document.getElementById('system-list');
+  if (!container) return;
+  const cards = container.querySelectorAll('.system-card');
+  if (cards && cards[index]) {
+    cards[index].focus();
+    cards[index].scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+}
+
+async function navigateSystemCard(direction) {
+  if (isNavigatingSystemCards) return;
+  if (!state.systems || state.systems.length === 0) return;
+
+  isNavigatingSystemCards = true;
+  try {
+    const currentSysAddr = state.selectedSystem ? state.selectedSystem.system_address : null;
+    let idx = state.systems.findIndex(s => String(s.system_address) === String(currentSysAddr));
+
+    if (direction === 'down') {
+      if (idx === -1) {
+        await selectSystem(state.systems[0].system_address);
+        focusCardByIndex(0);
+      } else if (idx < state.systems.length - 1) {
+        idx++;
+        await selectSystem(state.systems[idx].system_address);
+        focusCardByIndex(idx);
+      } else if (state.page < state.totalPages) {
+        state.page++;
+        await fetchSystems({ autoSelectTop: false });
+        if (state.systems && state.systems.length > 0) {
+          await selectSystem(state.systems[0].system_address);
+          focusCardByIndex(0);
+          scrollToTopOfSystemCards();
+        }
+      }
+    } else if (direction === 'up') {
+      if (idx === -1) {
+        await selectSystem(state.systems[0].system_address);
+        focusCardByIndex(0);
+      } else if (idx > 0) {
+        idx--;
+        await selectSystem(state.systems[idx].system_address);
+        focusCardByIndex(idx);
+      } else if (state.page > 1) {
+        state.page--;
+        await fetchSystems({ autoSelectTop: false });
+        const lastIdx = state.systems.length - 1;
+        if (lastIdx >= 0) {
+          await selectSystem(state.systems[lastIdx].system_address);
+          focusCardByIndex(lastIdx);
+        }
+      } else {
+        // At page 1, index 0 (top/latest)
+        focusCardByIndex(0);
+      }
+    }
+  } catch (err) {
+    console.warn('navigateSystemCard error:', err);
+  } finally {
+    isNavigatingSystemCards = false;
+  }
+}
+
+function initSystemCardKeyboardNavigation() {
+  window.addEventListener('keydown', (e) => {
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
+    if (isInputOrModalActive(e)) return;
+
+    if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      navigateSystemCard('down');
+    } else if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      navigateSystemCard('up');
+    }
+  });
+}
+
+function renderPagination(totalCount) {
+  document.getElementById('page-info').innerText = `${state.page} / ${state.totalPages} (${totalCount})`;
+  document.getElementById('btn-prev-page').disabled = state.page <= 1;
+  document.getElementById('btn-next-page').disabled = state.page >= state.totalPages;
+}
+
+function renderSystemHeader() {
+  if (!state.selectedSystem) return;
+  const sys = state.selectedSystem;
+  document.getElementById('current-system-name').innerText = sys.star_system;
+  
+  const coords = (sys.star_pos_x != null && sys.star_pos_y != null && sys.star_pos_z != null)
+    ? `[ ${sys.star_pos_x.toFixed(6)}, ${sys.star_pos_y.toFixed(6)}, ${sys.star_pos_z.toFixed(6)} ]`
+    : '';
+  document.getElementById('current-system-coords').innerText = coords;
+  document.getElementById('current-system-fss-value').innerText = formatCredits(sys.total_fss_value || 0);
+  document.getElementById('current-system-value').innerText = formatCredits(sys.total_potential_value || 0);
+  
+  // EDSM Discovery Badge in Header
+  const edsmBadgeEl = document.getElementById('current-system-edsm-badge');
+  if (edsmBadgeEl) {
+    if (sys.edsm_checked === 1) {
+      if (sys.edsm_registered === 1) {
+        const discText = sys.edsm_first_discoverer ? `⭐ EDSM: ${sys.edsm_first_discoverer}` : (t('edsm_found_badge') || '⭐ EDSM登録済');
+        const tip = (t('edsm_found_tip') || 'EDSM登録済 / 発見者: {discoverer}').replace('{discoverer}', sys.edsm_first_discoverer || (t('edsm_unknown_discoverer') || '不明'));
+        edsmBadgeEl.innerHTML = `<span class="tag-badge tag-edsm-found" title="${tip}">${discText}</span>`;
+      } else {
+        edsmBadgeEl.innerHTML = `<span class="tag-badge tag-edsm-unreg" title="${t('edsm_unreg_full_tip') || 'EDSM未登録 / 探査データを提出して1st Discoverを登録できます！'}">${t('edsm_unreg_full_badge') || '✨ 1st Discover 登録可能 (EDSM未登録)'}</span>`;
+      }
+    } else if (sys.has_first_discover || (sys.first_discovered_bodies && sys.first_discovered_bodies > 0)) {
+      edsmBadgeEl.innerHTML = `<span class="tag-badge tag-edsm-unreg" title="${t('edsm_first_disc_tip') || 'ゲーム内初発見 / EDSM 1st Discover 登録可能'}">${t('badge_first_discover') || '✨ 1st Discover 登録可能'}</span>`;
+    } else {
+      edsmBadgeEl.innerHTML = '';
+    }
+  }
+
+  // EDSM Sync Button
+  const btnSyncEdsm = document.getElementById('btn-sync-edsm');
+  if (btnSyncEdsm) {
+    btnSyncEdsm.style.display = 'inline-flex';
+    btnSyncEdsm.onclick = async () => {
+      btnSyncEdsm.disabled = true;
+      btnSyncEdsm.innerHTML = `<span>${t('sync_edsm_running') || '⏳ 同期中...'}</span>`;
+      try {
+        const resp = await fetch(`/api/systems/${sys.system_address}/edsm_sync`, { method: 'POST' });
+        const resData = await resp.json();
+        btnSyncEdsm.innerHTML = `<span>${t('sync_done_label') || '✓ 完了'}</span>`;
+        setTimeout(() => {
+          btnSyncEdsm.disabled = false;
+          btnSyncEdsm.innerHTML = `<span>${t('btn_sync_edsm_label') || '🔄 EDSM同期'}</span>`;
+        }, 1500);
+        await selectSystem(sys.system_address, true, false);
+      } catch (err) {
+        console.error('EDSM Sync error:', err);
+        btnSyncEdsm.disabled = false;
+        btnSyncEdsm.innerHTML = `<span>${t('sync_failed_label') || '❌ 失敗'}</span>`;
+        setTimeout(() => {
+          btnSyncEdsm.innerHTML = `<span>${t('btn_sync_edsm_label') || '🔄 EDSM同期'}</span>`;
+        }, 2000);
+      }
+    };
+  }
+
+  // Spansh Sync Button
+  const btnSyncSpansh = document.getElementById('btn-sync-spansh');
+  if (btnSyncSpansh) {
+    btnSyncSpansh.style.display = 'inline-flex';
+    btnSyncSpansh.onclick = async () => {
+      btnSyncSpansh.disabled = true;
+      btnSyncSpansh.innerHTML = `<span>${t('sync_spansh_running') || '⏳ 照会中...'}</span>`;
+      try {
+        const resp = await fetch(`/api/systems/${sys.system_address}/spansh_sync`, { method: 'POST' });
+        const resData = await resp.json();
+        const hsFound = resData.hotspots_found || 0;
+        const pmlFound = resData.pml_found || 0;
+        const resultMsg = (t('sync_spansh_result') || '✓ 完了 ({hs} HS / {pml} PML)')
+          .replace('{hs}', hsFound)
+          .replace('{pml}', pmlFound);
+        btnSyncSpansh.innerHTML = `<span>${resultMsg}</span>`;
+        setTimeout(() => {
+          btnSyncSpansh.disabled = false;
+          btnSyncSpansh.innerHTML = `<span>${t('btn_sync_spansh_label') || '🪐 Spansh照会'}</span>`;
+        }, 2000);
+        await selectSystem(sys.system_address, true, false);
+      } catch (err) {
+        console.error('Spansh Sync error:', err);
+        btnSyncSpansh.disabled = false;
+        btnSyncSpansh.innerHTML = `<span>${t('sync_failed_label') || '❌ 失敗'}</span>`;
+        setTimeout(() => {
+          btnSyncSpansh.innerHTML = `<span>${t('btn_sync_spansh_label') || '🪐 Spansh照会'}</span>`;
+        }, 2000);
+      }
+    };
+  }
+
+  // System State Badge & Economy Info (Modularized: Faction / Population / BGS)
+  const modSettings = (typeof getModuleSettings === 'function') ? getModuleSettings() : { faction: false, rhino: false };
+  const isFactionEnabled = Boolean(modSettings.faction);
+
+  const stateBadgeEl = document.getElementById('current-system-state-badge');
+  const econInfoEl = document.getElementById('current-system-economy-info');
+  if (stateBadgeEl) {
+    stateBadgeEl.innerHTML = '';
+    stateBadgeEl.style.display = 'none';
+
+    if (isFactionEnabled) {
+      const sState = (sys.system_state || '').trim();
+      if (sState && sState.toLowerCase() !== 'none') {
+        let badgeStyle = 'background: rgba(148, 163, 184, 0.15); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.35);';
+        let icon = '🏛️';
+        let label = sState;
+        const lower = sState.toLowerCase();
+        if (lower.includes('boom')) {
+          badgeStyle = 'background: rgba(34, 197, 94, 0.2); color: #22c55e; border: 1px solid #22c55e; font-weight: bold; box-shadow: 0 0 8px rgba(34, 197, 94, 0.3);';
+          icon = '📈';
+          label = t('bgs_boom_label') || 'Boom (好況)';
+        } else if (lower.includes('investment')) {
+          badgeStyle = 'background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid #38bdf8; font-weight: bold;';
+          icon = '💼';
+          label = t('bgs_investment_label') || 'Investment (投資)';
+        } else if (lower.includes('expansion')) {
+          badgeStyle = 'background: rgba(168, 85, 247, 0.2); color: #c084fc; border: 1px solid #c084fc; font-weight: bold;';
+          icon = '🚀';
+          label = t('bgs_expansion_label') || 'Expansion (拡張)';
+        } else if (lower.includes('war') || lower.includes('unrest') || lower.includes('lockdown')) {
+          badgeStyle = 'background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid #f87171; font-weight: bold;';
+          icon = '⚠️';
+        } else if (lower.includes('bust')) {
+          badgeStyle = 'background: rgba(234, 179, 8, 0.2); color: #facc15; border: 1px solid #facc15; font-weight: bold;';
+          icon = '📉';
+          label = t('bgs_bust_label') || 'Bust (不況)';
+        }
+        const bgsTip = (t('bgs_state_tip') || 'EDSM星系経済・BGS状態: {state}').replace('{state}', escapeHtml(sState));
+        stateBadgeEl.innerHTML = `<span class="tag-badge" style="${badgeStyle} font-size: 0.72rem; padding: 2px 7px;" title="${bgsTip}">${icon} ${escapeHtml(label)}</span>`;
+        stateBadgeEl.style.display = 'inline-flex';
+      } else if (sState && sState.toLowerCase() === 'none') {
+        stateBadgeEl.innerHTML = `<span class="tag-badge" style="background: rgba(148, 163, 184, 0.15); color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.3); font-size: 0.7rem; padding: 2px 6px;" title="${t('bgs_none_tip') || 'EDSM星系状態: 平常 (None)'}">${t('bgs_none_label') || '⚪ 平常 (None)'}</span>`;
+        stateBadgeEl.style.display = 'inline-flex';
+      } else if (sys.population === 0) {
+        stateBadgeEl.innerHTML = `<span class="tag-badge" style="background: rgba(100, 116, 139, 0.15); color: #94a3b8; border: 1px solid rgba(100, 116, 139, 0.3); font-size: 0.7rem; padding: 2px 6px;" title="${t('bgs_uninhabited_tip') || '無人星系 (深宇宙)'}">${t('bgs_uninhabited_label') || '🌌 無人星系'}</span>`;
+        stateBadgeEl.style.display = 'inline-flex';
+      }
+    }
+
+    if (sys.mining_scout_grade === 'High') {
+      stateBadgeEl.innerHTML += `<span class="tag-badge badge-scout-high" style="font-size: 0.72rem; padding: 2px 7px;" title="Mining Scout High (Pristine + Metallic Rings)">⛏️ Scout: High</span>`;
+      stateBadgeEl.style.display = 'inline-flex';
+    } else if (sys.mining_scout_grade === 'Medium') {
+      stateBadgeEl.innerHTML += `<span class="tag-badge badge-scout-medium" style="font-size: 0.72rem; padding: 2px 7px;" title="Mining Scout Medium (Pristine + Icy Rings)">⛏️ Scout: Medium</span>`;
+      stateBadgeEl.style.display = 'inline-flex';
+    }
+  }
+
+  if (econInfoEl) {
+    if (isFactionEnabled) {
+      const parts = [];
+      if (sys.population && sys.population > 0) {
+        const popFormatted = (typeof formatNumber === 'function') ? formatNumber(sys.population) : Number(sys.population).toLocaleString();
+        parts.push(`<span style="color: #e2e8f0;" title="${t('population_label') || '星系人口'}: ${popFormatted}">👥 ${popFormatted}</span>`);
+      }
+      if (sys.controlling_faction) {
+        parts.push(`<span style="color: #cbd5e1;" title="${t('faction_controlling_tip') || '支配勢力'}">🎯 ${escapeHtml(sys.controlling_faction)}</span>`);
+      }
+      if (sys.system_reserve) {
+        const isPristine = sys.system_reserve.toLowerCase().includes('pristine');
+        const rColor = isPristine ? '#38bdf8; font-weight: bold;' : '#cbd5e1;';
+        parts.push(`<span style="color: ${rColor}" title="${t('reserve_level_tip') || '資源埋蔵量'}">💎 ${escapeHtml(sys.system_reserve)} Reserves</span>`);
+      }
+      if (sys.system_economy) {
+        const econStr = sys.system_economy + (sys.system_second_economy ? ` / ${sys.system_second_economy}` : '');
+        parts.push(`<span style="color: #94a3b8;" title="${t('economy_primary_tip') || '主要経済'}">🏭 ${escapeHtml(econStr)}</span>`);
+      }
+      if (parts.length > 0) {
+        econInfoEl.innerHTML = `<div style="display: inline-flex; align-items: center; gap: 6px; font-size: 0.7rem; background: rgba(0,0,0,0.3); border: 1px solid var(--border-color); border-radius: 4px; padding: 2px 6px;">${parts.join('<span style="color: var(--text-dim);">|</span>')}</div>`;
+        econInfoEl.style.display = 'inline-flex';
+      } else {
+        econInfoEl.innerHTML = '';
+        econInfoEl.style.display = 'none';
+      }
+    } else {
+      econInfoEl.innerHTML = '';
+      econInfoEl.style.display = 'none';
+    }
+  }
+
+  // Configurable Key Galactic Distances in Header
+  updateCurrentSystemDistances(sys);
+
+  // System Mass Badge in Header (Main Star & Total System Mass)
+  const massBadgeEl = document.getElementById('current-system-mass-badge');
+  if (massBadgeEl) {
+    const mainMass = (typeof formatSolarMass === 'function') ? formatSolarMass(sys.main_star_mass) : (sys.main_star_mass ? Number(sys.main_star_mass).toFixed(2) : null);
+    const totMass = (typeof formatSolarMass === 'function') ? formatSolarMass(sys.total_system_mass) : (sys.total_system_mass ? Number(sys.total_system_mass).toFixed(2) : null);
+    if (mainMass || totMass) {
+      const tip = (t('system_mass_badge_tip') || '主星重量: {main} M☉ / 星系総重量: {total} M☉')
+        .replace('{main}', mainMass || '--')
+        .replace('{total}', totMass || mainMass || '--');
+      let text = '';
+      if (mainMass && totMass && mainMass !== totMass) {
+        text = (t('system_mass_header') || '⚖️ 主星: {main} M☉ | 総重量: {total} M☉')
+          .replace('{main}', mainMass)
+          .replace('{total}', totMass);
+      } else {
+        text = (t('system_mass_header_main_only') || '⚖️ 主星: {main} M☉')
+          .replace('{main}', mainMass || totMass);
+      }
+      massBadgeEl.className = 'tag-badge';
+      massBadgeEl.style.cssText = 'background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.35); font-size: 0.72rem; padding: 2px 7px; display: inline-flex; align-items: center;';
+      massBadgeEl.title = tip;
+      massBadgeEl.innerText = text;
+    } else {
+      massBadgeEl.style.display = 'none';
+      massBadgeEl.innerText = '';
+    }
+  }
+
+  // Astrophysical Rarity Badge in Header
+  const physBadgeEl = document.getElementById('current-system-physics-badge');
+  if (physBadgeEl) {
+    const rScore = (sys.rarity_score !== undefined && sys.rarity_score !== null)
+      ? sys.rarity_score
+      : (state.currentSystemData && state.currentSystemData.physics_evaluation ? state.currentSystemData.physics_evaluation.rarity_score : null);
+
+    if (rScore !== null && rScore !== undefined) {
+      const roundedScore = Math.round(rScore * 10) / 10;
+      let rClass = 'rarity-score-normal';
+      let rLabel = t('physics_normal');
+      if (roundedScore >= 95) {
+        rClass = 'rarity-score-legendary';
+        rLabel = t('physics_legendary');
+      } else if (roundedScore >= 80) {
+        rClass = 'rarity-score-epic';
+        rLabel = t('physics_epic');
+      } else if (roundedScore >= 60) {
+        rClass = 'rarity-score-rare';
+        rLabel = t('physics_rare');
+      }
+      physBadgeEl.className = `tag-badge ${rClass}`;
+      physBadgeEl.innerHTML = `🌌 ★ ${roundedScore} pt <span style="font-size: 0.68rem; opacity: 0.9;">(${rLabel})</span>`;
+      physBadgeEl.style.display = 'inline-flex';
+      physBadgeEl.onclick = () => {
+        state.currentView = 'physics';
+        updateViewButtons();
+        renderCurrentView();
+      };
+    } else {
+      physBadgeEl.style.display = 'none';
+      physBadgeEl.onclick = null;
+    }
+  }
+  
+  // Exobiology System Summary
+  const bioBox = document.getElementById('system-bio-payout-box');
+  const bioScannedBaseEl = document.getElementById('current-system-bio-scanned-base');
+  const bioScannedFirstEl = document.getElementById('current-system-bio-scanned-first');
+  const bioBaseEl = document.getElementById('current-system-bio-base');
+  const bioFirstEl = document.getElementById('current-system-bio-first');
+
+  if (modSettings.exobiology !== false && (sys.bio_total_base_value > 0 || sys.bio_signals_count > 0 || (state.currentSystemData && state.currentSystemData.system_bio_summary && (state.currentSystemData.system_bio_summary.total_base_value > 0 || state.currentSystemData.system_bio_summary.scanned_base_value > 0)))) {
+    const summary = (state.currentSystemData && state.currentSystemData.system_bio_summary) || {};
+    const scannedBaseVal = sys.bio_scanned_base_value !== undefined ? sys.bio_scanned_base_value : (summary.scanned_base_value || 0);
+    const scannedFirstVal = sys.bio_scanned_first_value !== undefined ? sys.bio_scanned_first_value : (summary.scanned_first_value || 0);
+    const baseVal = sys.bio_total_base_value || summary.total_base_value || 0;
+    const firstVal = sys.bio_total_first_value || summary.total_first_value || 0;
+    const sigCount = sys.bio_signals_count || summary.total_signals || 0;
+    const scCount = sys.bio_scanned_count || summary.total_scanned || 0;
+
+    if (bioBox) bioBox.style.display = 'block';
+    if (bioScannedBaseEl) bioScannedBaseEl.innerText = formatCredits(scannedBaseVal);
+    if (bioScannedFirstEl) bioScannedFirstEl.innerText = formatCredits(scannedFirstVal);
+    if (bioBaseEl) bioBaseEl.innerText = formatCredits(baseVal);
+    if (bioFirstEl) bioFirstEl.innerText = formatCredits(firstVal);
+    if (bioBox) bioBox.title = `Total Signals: ${sigCount}, Scanned: ${scCount}`;
+  } else {
+    if (bioBox) bioBox.style.display = 'none';
+  }
+
+  const totalB = sys.total_bodies || sys.scanned_bodies || 0;
+  document.getElementById('body-count-badge').innerText = `${t('scanned_badge')}: ${sys.scanned_bodies} / ${totalB}`;
+
+  // CMDR Data Share Dropdown & Shared / External Badge in Header
+  const shareDropdownContainer = document.getElementById('share-dropdown-container');
+  const btnExportPng = document.getElementById('btn-export-png');
+  const btnExportHtml = document.getElementById('btn-export-html');
+  const sharedBadge = document.getElementById('current-system-shared-badge');
+  const extBadge = document.getElementById('current-system-external-badge');
+
+  const isUnvisitedExternal = !sys.visit_count;
+
+  if (extBadge) {
+    if (isUnvisitedExternal) {
+      extBadge.innerHTML = `<span class="tag-badge tag-external" style="background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.6); font-weight: bold;" title="${t('external_unvisited_header_tip') || '未訪問・EDSM外部参照星系（Web共有およびパッケージ書出は利用できません）'}">${t('badge_external_unvisited') || '🌐 外部参照 (未訪問)'}</span>`;
+      extBadge.style.display = 'inline-flex';
+    } else {
+      extBadge.innerHTML = '';
+      extBadge.style.display = 'none';
+    }
+  }
+
+  if (isUnvisitedExternal) {
+    // 外部参照・未訪問星系は、共有・出力を禁止（非表示化）
+    if (shareDropdownContainer) shareDropdownContainer.style.display = 'none';
+    if (sharedBadge) {
+      sharedBadge.innerHTML = '';
+      sharedBadge.style.display = 'none';
+    }
+  } else {
+    if (shareDropdownContainer) shareDropdownContainer.style.display = 'inline-flex';
+
+    if (sharedBadge) {
+      if (sys.is_shared) {
+        const byText = sys.shared_by ? `${t('shared_by_label')}: ${sys.shared_by}` : t('shared_system');
+        sharedBadge.innerHTML = `<span class="tag-badge tag-shared" style="background: rgba(167, 139, 250, 0.25); color: #c4b5fd; border: 1px solid #a78bfa; font-weight: bold;" title="${byText}">🤝 ${t('shared_system')}</span>`;
+        sharedBadge.style.display = 'inline-flex';
+      } else {
+        sharedBadge.innerHTML = '';
+        sharedBadge.style.display = 'none';
+      }
+    }
+  }
+}
+
+// Collapsible Groups & Badges
+function updateCollapsibleBadges() {
+  const searchInput = document.getElementById('system-search');
+  const searchCount = (searchInput && searchInput.value && searchInput.value.trim().length > 0) ? 1 : 0;
+  const badgeSearch = document.getElementById('badge-search-controls');
+  if (badgeSearch) {
+    badgeSearch.innerText = searchCount > 0 ? String(searchCount) : '';
+    badgeSearch.classList.toggle('active', searchCount > 0);
+  }
+
+  const generalKeys = ['has_elw', 'has_water_world', 'has_ammonia', 'has_terraformable', 'has_bio', 'has_first_discover', 'has_bookmarks', 'is_shared', 'has_high_g', 'has_anomalies', 'has_ggg', 'has_partial_dss', 'age_lt_my', 'age_gte_my'];
+  const generalCount = generalKeys.filter(k => (state.filters[k] === true || state.filters[k] > 0)).length;
+  const badgeGen = document.getElementById('badge-general-filters');
+  if (badgeGen) {
+    badgeGen.innerText = generalCount > 0 ? generalCount : '';
+    badgeGen.classList.toggle('active', generalCount > 0);
+  }
+
+  const miningKeys = ['has_landable_hmc', 'has_landable_metal_rich', 'has_landable_rocky', 'has_landable_icy', 'has_landable_rocky_ice', 'has_landable_ringed', 'has_mining_signals'];
+  let miningCount = miningKeys.filter(k => (state.filters[k] === true || state.filters[k] > 0)).length;
+  if (state.miningScout) miningCount++;
+  if (state.hasLargePad) miningCount++;
+  if (state.maxArrivalDistLs !== null && state.maxArrivalDistLs !== undefined && state.maxArrivalDistLs !== '') miningCount++;
+  const badgeMine = document.getElementById('badge-mining-filters');
+  if (badgeMine) {
+    badgeMine.innerText = miningCount > 0 ? miningCount : '';
+    badgeMine.classList.toggle('active', miningCount > 0);
+  }
+
+  const celestialCount = (state.celestialFilters || []).length;
+  const badgeCelestial = document.getElementById('badge-celestial-filters');
+  if (badgeCelestial) {
+    badgeCelestial.innerText = celestialCount > 0 ? celestialCount : '';
+    badgeCelestial.classList.toggle('active', celestialCount > 0);
+  }
+
+  const starCount = (state.starTypes || []).length + (state.luminosityClasses || []).length;
+  const badgeStar = document.getElementById('badge-stars-filters');
+  if (badgeStar) {
+    badgeStar.innerText = starCount > 0 ? starCount : '';
+    badgeStar.classList.toggle('active', starCount > 0);
+  }
+
+  let sortCount = 0;
+  if (state.datePreset && state.datePreset !== 'all') sortCount++;
+  if (state.dateFrom || state.dateTo) sortCount++;
+  if (state.sortBy && (state.sortBy !== 'rarity_score' || state.sortOrder !== 'desc')) sortCount++;
+  if (state.sortBy2) sortCount++;
+  if (state.sortBy3) sortCount++;
+  if (state.liveSyncEnabled) sortCount++;
+  const badgeSort = document.getElementById('badge-sort-filters');
+  if (badgeSort) {
+    badgeSort.innerText = sortCount > 0 ? sortCount : '';
+    badgeSort.classList.toggle('active', sortCount > 0);
+  }
+}
+
+function initCollapsibleSections() {
+  const groups = document.querySelectorAll('.collapsible-group');
+  groups.forEach(grp => {
+    const header = grp.querySelector('.collapsible-header');
+    const groupKey = header ? header.dataset.group : null;
+    if (groupKey && state.collapsedGroups[groupKey]) {
+      grp.classList.add('collapsed');
+    }
+    if (header) {
+      header.addEventListener('click', () => {
+        grp.classList.toggle('collapsed');
+        if (groupKey) {
+          state.collapsedGroups[groupKey] = grp.classList.contains('collapsed');
+          try {
+            localStorage.setItem('ed_collapsed_groups', JSON.stringify(state.collapsedGroups));
+          } catch (e) {}
+        }
+      });
+    }
+  });
+  updateCollapsibleBadges();
+}
+
+// Stellar Multi-Search Filters (Badge-Style Chips)
+function initStellarFilters() {
+  const getUpdateFilterChipUI = () => (typeof window.updateFilterChipUI === 'function' ? window.updateFilterChipUI : (typeof updateFilterChipUI === 'function' ? updateFilterChipUI : null));
+  const getShowFilterCountPopover = () => (typeof window.showFilterCountPopover === 'function' ? window.showFilterCountPopover : (typeof showFilterCountPopover === 'function' ? showFilterCountPopover : null));
+  const getCloseActiveFilterPopover = () => (typeof window.closeActiveFilterPopover === 'function' ? window.closeActiveFilterPopover : (typeof closeActiveFilterPopover === 'function' ? closeActiveFilterPopover : null));
+
+  // 1. Stellar Spectral Type Chips
+  const starChips = document.querySelectorAll('.star-chip');
+  starChips.forEach(chip => {
+    const val = chip.dataset.star;
+    if (!val) return;
+
+    chip.addEventListener('click', () => {
+      const closePopover = getCloseActiveFilterPopover();
+      if (closePopover) closePopover();
+      const current = state.starCounts[val] || 0;
+      const nextVal = current > 0 ? 0 : 1;
+      if (nextVal > 0) {
+        state.starCounts[val] = 1;
+        if (!state.starTypes.includes(val)) state.starTypes.push(val);
+      } else {
+        delete state.starCounts[val];
+        const idx = state.starTypes.indexOf(val);
+        if (idx >= 0) state.starTypes.splice(idx, 1);
+      }
+      const updateUI = getUpdateFilterChipUI();
+      if (updateUI) updateUI(chip, nextVal);
+      else chip.classList.toggle('active', nextVal > 0);
+      state.page = 1;
+      updateCollapsibleBadges();
+      fetchSystems({ autoSelectTop: true });
+    });
+
+    chip.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const showPopover = getShowFilterCountPopover();
+      if (showPopover) {
+        showPopover(chip, state.starCounts[val] || 0, (n) => {
+          if (n > 0) {
+            state.starCounts[val] = n;
+            if (!state.starTypes.includes(val)) state.starTypes.push(val);
+          } else {
+            delete state.starCounts[val];
+            const idx = state.starTypes.indexOf(val);
+            if (idx >= 0) state.starTypes.splice(idx, 1);
+          }
+          const updateUI = getUpdateFilterChipUI();
+          if (updateUI) updateUI(chip, n);
+          else chip.classList.toggle('active', n > 0);
+          state.page = 1;
+          updateCollapsibleBadges();
+          fetchSystems({ autoSelectTop: true });
+        });
+      }
+    });
+
+    chip.setAttribute('title', `${chip.getAttribute('title') || ''} (右クリック/長押しで個数指定)`.trim());
+  });
+
+  const modeRadios = document.querySelectorAll('input[name="star-match-mode"]');
+  modeRadios.forEach(radio => {
+    radio.addEventListener('change', (e) => {
+      state.starMatchMode = e.target.value;
+      if (state.starTypes.length > 0) {
+        state.page = 1;
+        fetchSystems({ autoSelectTop: true });
+      }
+    });
+  });
+
+  const clearStarChips = () => {
+    const updateUI = getUpdateFilterChipUI();
+    document.querySelectorAll('.star-chip').forEach(chip => {
+      if (updateUI) updateUI(chip, 0);
+      else chip.classList.remove('active');
+    });
+    state.starTypes = [];
+    state.starCounts = {};
+    state.page = 1;
+    updateCollapsibleBadges();
+    fetchSystems({ autoSelectTop: true });
+  };
+
+  const btnClearStars = document.getElementById('btn-clear-stars-filters');
+  if (btnClearStars) {
+    btnClearStars.addEventListener('click', clearStarChips);
+  }
+  const btnClearStar = document.getElementById('btn-clear-star-filters');
+  if (btnClearStar) {
+    btnClearStar.addEventListener('click', clearStarChips);
+  }
+
+  // 2. Stellar Luminosity & Evolutionary Stages Chips
+  const lumChips = document.querySelectorAll('.lum-chip');
+  lumChips.forEach(chip => {
+    const val = chip.dataset.lum;
+    if (!val) return;
+
+    chip.addEventListener('click', () => {
+      const closePopover = getCloseActiveFilterPopover();
+      if (closePopover) closePopover();
+      const current = state.lumCounts[val] || 0;
+      const nextVal = current > 0 ? 0 : 1;
+      if (nextVal > 0) {
+        state.lumCounts[val] = 1;
+        if (!state.luminosityClasses.includes(val)) state.luminosityClasses.push(val);
+      } else {
+        delete state.lumCounts[val];
+        const idx = state.luminosityClasses.indexOf(val);
+        if (idx >= 0) state.luminosityClasses.splice(idx, 1);
+      }
+      const updateUI = getUpdateFilterChipUI();
+      if (updateUI) updateUI(chip, nextVal);
+      else chip.classList.toggle('active', nextVal > 0);
+      state.page = 1;
+      updateCollapsibleBadges();
+      fetchSystems({ autoSelectTop: true });
+    });
+
+    chip.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const showPopover = getShowFilterCountPopover();
+      if (showPopover) {
+        showPopover(chip, state.lumCounts[val] || 0, (n) => {
+          if (n > 0) {
+            state.lumCounts[val] = n;
+            if (!state.luminosityClasses.includes(val)) state.luminosityClasses.push(val);
+          } else {
+            delete state.lumCounts[val];
+            const idx = state.luminosityClasses.indexOf(val);
+            if (idx >= 0) state.luminosityClasses.splice(idx, 1);
+          }
+          const updateUI = getUpdateFilterChipUI();
+          if (updateUI) updateUI(chip, n);
+          else chip.classList.toggle('active', n > 0);
+          state.page = 1;
+          updateCollapsibleBadges();
+          fetchSystems({ autoSelectTop: true });
+        });
+      }
+    });
+
+    chip.setAttribute('title', `${chip.getAttribute('title') || ''} (右クリック/長押しで個数指定)`.trim());
+  });
+
+  const lumRadios = document.querySelectorAll('input[name="lum-match-mode"]');
+  lumRadios.forEach(radio => {
+    radio.addEventListener('change', (e) => {
+      state.luminosityMatchMode = e.target.value;
+      if (state.luminosityClasses.length > 0) {
+        state.page = 1;
+        fetchSystems({ autoSelectTop: true });
+      }
+    });
+  });
+
+  const btnClearLum = document.getElementById('btn-clear-lum-filters');
+  if (btnClearLum) {
+    btnClearLum.addEventListener('click', () => {
+      const updateUI = getUpdateFilterChipUI();
+      document.querySelectorAll('.lum-chip').forEach(chip => {
+        if (updateUI) updateUI(chip, 0);
+        else chip.classList.remove('active');
+      });
+      state.luminosityClasses = [];
+      state.lumCounts = {};
+      state.page = 1;
+      updateCollapsibleBadges();
+      fetchSystems({ autoSelectTop: true });
+    });
+  }
+}
+
+// UI Layout Mode Switcher (1-Column vs 2-Column Left Pane)
+function initLayoutSwitcher() {
+  const btnToggleLayout = document.getElementById('btn-toggle-layout');
+  const mainContainer = document.querySelector('.main-container');
+  const layoutIcon = document.getElementById('layout-toggle-icon');
+  const layoutText = document.getElementById('layout-toggle-text');
+
+  function applyLayout(mode) {
+    state.uiLayoutMode = mode;
+    if (mainContainer) {
+      mainContainer.classList.toggle('layout-2col-left', mode === '2col');
+    }
+    if (layoutText) {
+      layoutText.innerText = mode === '2col' ? (t('btn_layout_1col') || '1列表示') : (t('btn_layout_2col') || '2列表示');
+    }
+    if (layoutIcon) {
+      layoutIcon.innerText = mode === '2col' ? '🗖' : '◫';
+    }
+    try {
+      localStorage.setItem('ed_ui_layout', mode);
+    } catch (e) {}
+
+    // When 2-column mode is active, collapse search & sort groups to conserve vertical space
+    if (mode === '2col') {
+      const searchGroup = document.getElementById('group-search-controls');
+      const sortGroup = document.getElementById('group-sort-filters');
+      if (searchGroup && !searchGroup.classList.contains('collapsed')) {
+        searchGroup.classList.add('collapsed');
+        state.collapsedGroups['search'] = true;
+      }
+      if (sortGroup && !sortGroup.classList.contains('collapsed')) {
+        sortGroup.classList.add('collapsed');
+        state.collapsedGroups['sort'] = true;
+      }
+      try {
+        localStorage.setItem('ed_collapsed_groups', JSON.stringify(state.collapsedGroups));
+      } catch (e) {}
+    }
+  }
+
+  // Restore initial layout mode
+  applyLayout(state.uiLayoutMode);
+
+  if (btnToggleLayout) {
+    btnToggleLayout.addEventListener('click', () => {
+      const nextMode = state.uiLayoutMode === '2col' ? '1col' : '2col';
+      applyLayout(nextMode);
+    });
+  }
+}
+
+// Collapsible Header Exploration Stats Panel
+function initHeaderStatsCollapse() {
+  const headerGroup = document.getElementById('header-logged-group');
+  const btnToggle = document.getElementById('btn-toggle-header-stats');
+  if (!headerGroup || !btnToggle) return;
+
+  function applyCollapse(collapsed) {
+    state.headerStatsCollapsed = collapsed;
+    headerGroup.classList.toggle('collapsed', collapsed);
+    try {
+      localStorage.setItem('ed_header_stats_collapsed', collapsed ? 'true' : 'false');
+    } catch (e) {}
+    renderHeaderUpdateState();
+  }
+
+  applyCollapse(state.headerStatsCollapsed);
+
+  btnToggle.addEventListener('click', () => {
+    applyCollapse(!headerGroup.classList.contains('collapsed'));
+  });
+
+  const indicatorEl = document.getElementById('header-update-indicator');
+  if (indicatorEl) {
+    indicatorEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+    });
+  }
+}
+
+// Header Update Notification Management
+async function checkForAppUpdate() {
+  try {
+    const res = await fetch('/api/check_update');
+    if (!res.ok) return;
+    const data = await res.json();
+    if (typeof state !== 'undefined') {
+      state.updateInfo = data;
+    }
+    renderHeaderUpdateState();
+  } catch (err) {
+    console.warn('[UpdateChecker] Failed to check for app updates:', err);
+  }
+}
+
+function renderHeaderUpdateState() {
+  const headerGroup = document.getElementById('header-logged-group');
+  const banner = document.getElementById('header-update-banner');
+  const indicator = document.getElementById('header-update-indicator');
+  const versionEl = document.getElementById('header-update-version');
+  const summaryEl = document.getElementById('header-update-summary');
+  const linkEl = document.getElementById('header-update-link');
+  const bannerLink = document.getElementById('header-update-banner-link');
+  const leftUpdateBtn = document.getElementById('header-left-update-btn');
+  const leftUpdateVersion = document.getElementById('header-left-update-version');
+
+  const updateInfo = (typeof state !== 'undefined' && state.updateInfo) ? state.updateInfo : null;
+  if (!updateInfo) return;
+
+  if (updateInfo.has_update) {
+    if (leftUpdateBtn) {
+      leftUpdateBtn.style.display = 'inline-flex';
+      if (updateInfo.release_url) {
+        leftUpdateBtn.href = updateInfo.release_url;
+      }
+      if (leftUpdateVersion) {
+        leftUpdateVersion.textContent = updateInfo.latest_version ? `${updateInfo.latest_version}` : '';
+      }
+      const summaryText = updateInfo.summary || updateInfo.release_name || '';
+      leftUpdateBtn.title = `新バージョン ${updateInfo.latest_version || ''} が利用可能です\n${summaryText}\nクリックしてGitHub最新リリースを開く`;
+    }
+
+    if (headerGroup) {
+      headerGroup.classList.add('has-new-version');
+      const isCollapsed = headerGroup.classList.contains('collapsed');
+
+      if (indicator) {
+        indicator.style.display = isCollapsed ? 'none' : 'inline-flex';
+        if (updateInfo.release_url) {
+          indicator.href = updateInfo.release_url;
+        }
+      }
+      if (banner) {
+        banner.style.display = isCollapsed ? 'flex' : 'none';
+      }
+
+      if (versionEl) {
+        versionEl.textContent = updateInfo.latest_version || '';
+      }
+      if (summaryEl) {
+        const summaryText = updateInfo.summary || updateInfo.release_name || '';
+        summaryEl.textContent = summaryText;
+        summaryEl.title = summaryText;
+      }
+      if (bannerLink && updateInfo.release_url) {
+        bannerLink.href = updateInfo.release_url;
+        bannerLink.title = (updateInfo.summary || updateInfo.release_name) ? `${updateInfo.summary || updateInfo.release_name} (${updateInfo.release_url})` : updateInfo.release_url;
+      }
+      if (linkEl && updateInfo.release_url) {
+        linkEl.href = updateInfo.release_url;
+      }
+    }
+  } else {
+    if (leftUpdateBtn) {
+      leftUpdateBtn.style.display = 'none';
+    }
+    if (headerGroup) {
+      headerGroup.classList.remove('has-new-version');
+      if (indicator) indicator.style.display = 'none';
+      if (banner) banner.style.display = 'none';
+    }
+  }
+}
+
+function clearSystemBioSummary() {
+  const bioBox = document.getElementById('system-bio-payout-box');
+  if (bioBox) bioBox.style.display = 'none';
+  const bioScannedBaseEl = document.getElementById('current-system-bio-scanned-base');
+  const bioScannedFirstEl = document.getElementById('current-system-bio-scanned-first');
+  const bioBaseEl = document.getElementById('current-system-bio-base');
+  const bioFirstEl = document.getElementById('current-system-bio-first');
+  if (bioScannedBaseEl) bioScannedBaseEl.innerText = '0 Cr';
+  if (bioScannedFirstEl) bioScannedFirstEl.innerText = '0 Cr';
+  if (bioBaseEl) bioBaseEl.innerText = '-- Cr';
+  if (bioFirstEl) bioFirstEl.innerText = '-- Cr';
+}
+
+// Window / Global Export
+if (typeof window !== 'undefined') {
+  window.defaultLandmarkSettings = defaultLandmarkSettings;
+  window.getLandmarkSettings = getLandmarkSettings;
+  window.saveLandmarkSettings = saveLandmarkSettings;
+  window.generateLandmarkDistanceBadges = generateLandmarkDistanceBadges;
+  window.updateCurrentSystemDistances = updateCurrentSystemDistances;
+  window.renderSystemList = renderSystemList;
+  window.highlightSelectedSystemCard = highlightSelectedSystemCard;
+  window.scrollToTopOfSystemCards = scrollToTopOfSystemCards;
+  window.renderPagination = renderPagination;
+  window.renderSystemHeader = renderSystemHeader;
+  window.updateCollapsibleBadges = updateCollapsibleBadges;
+  window.initCollapsibleSections = initCollapsibleSections;
+  window.initStellarFilters = initStellarFilters;
+  window.initLayoutSwitcher = initLayoutSwitcher;
+  window.initHeaderStatsCollapse = initHeaderStatsCollapse;
+  window.clearSystemBioSummary = clearSystemBioSummary;
+  window.checkForAppUpdate = checkForAppUpdate;
+  window.renderHeaderUpdateState = renderHeaderUpdateState;
+  window.initSystemCardKeyboardNavigation = initSystemCardKeyboardNavigation;
+  window.navigateSystemCard = navigateSystemCard;
+  window.focusCardByIndex = focusCardByIndex;
+  window.isInputOrModalActive = isInputOrModalActive;
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    defaultLandmarkSettings,
+    getLandmarkSettings,
+    saveLandmarkSettings,
+    generateLandmarkDistanceBadges,
+    updateCurrentSystemDistances,
+    renderSystemList,
+    highlightSelectedSystemCard,
+    scrollToTopOfSystemCards,
+    renderPagination,
+    renderSystemHeader,
+    updateCollapsibleBadges,
+    initCollapsibleSections,
+    initStellarFilters,
+    initLayoutSwitcher,
+    initHeaderStatsCollapse,
+    clearSystemBioSummary,
+    checkForAppUpdate,
+    renderHeaderUpdateState,
+    initSystemCardKeyboardNavigation,
+    navigateSystemCard,
+    focusCardByIndex,
+    isInputOrModalActive
+  };
+}

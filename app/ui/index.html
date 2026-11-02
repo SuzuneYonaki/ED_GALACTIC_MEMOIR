@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ED GALACTIC MEMOIR - Your Flight Log, Your Legacy.</title>
+  <link rel="icon" type="image/png" href="/static/icon.png">
+  <link rel="stylesheet" href="/static/css/style.css?v={{ cache_bust }}">
+  <script>
+    (function() {
+      var savedTheme = localStorage.getItem('ed_theme');
+      if (savedTheme) {
+        document.documentElement.setAttribute('data-theme', savedTheme);
+      }
+      var saved = localStorage.getItem('app_base_font_size');
+      var size = saved ? parseInt(saved, 10) : 18;
+      if (!isNaN(size) && size >= 8 && size <= 60) {
+        document.documentElement.style.fontSize = size + 'px';
+      } else {
+        document.documentElement.style.fontSize = '18px';
+      }
+      var savedLang = localStorage.getItem('ed_lang');
+      if (savedLang === 'en' || savedLang === 'ja') {
+        document.documentElement.lang = savedLang;
+      }
+    })();
+  </script>
+</head>
+<body>
+  {% include "components/banner.html" %}
+
+  {% include "components/header.html" %}
+
+  <!-- Main Container (3-pane) -->
+  <div class="main-container">
+    {% include "components/left_pane.html" %}
+
+    <div class="pane-resizer pane-resizer-left" id="resizer-left" title="ドラッグして幅を調整 (ダブルクリックでリセット)"></div>
+
+    {% include "components/center_pane.html" %}
+
+    <div class="pane-resizer pane-resizer-right" id="resizer-right" title="ドラッグして幅を調整 (ダブルクリックでリセット)"></div>
+
+    {% include "components/right_pane.html" %}
+  </div>
+
+  {% include "components/modals.html" %}
+
+  <!-- Addon UI panels are injected here by addons.js; hidden until at least one loads -->
+  <div id="addon-panels" class="addon-panels" hidden></div>
+
+  <script src="/static/js/i18n.js?v={{ cache_bust }}"></script>
+  <script src="/static/js/utils.js?v={{ cache_bust }}"></script>
+  <script src="/static/js/inspector.js?v={{ cache_bust }}"></script>
+  <script src="/static/js/mining_view.js?v={{ cache_bust }}"></script>
+  <script src="/static/js/bio_log.js?v={{ cache_bust }}"></script>
+  <script src="/static/js/system_list.js?v={{ cache_bust }}"></script>
+  <script src="/static/js/system_map.js?v={{ cache_bust }}"></script>
+  <script src="/static/js/app.js?v={{ cache_bust }}"></script>
+  <script type="module" src="/static/js/addons.js?v={{ cache_bust }}"></script>
+
+</body>
+</html>

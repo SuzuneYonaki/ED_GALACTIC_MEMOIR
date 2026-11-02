@@ -1,0 +1,167 @@
+  <!-- Header -->
+  <header>
+    <!-- Dedicated Top-Left Update Notification Button (Visible whenever an update is available, independent of collapse state) -->
+    <a id="header-left-update-btn" class="header-left-update-btn" href="#" target="_blank" rel="noopener noreferrer" style="display: none;" data-i18n-title="header_update_available_tip" title="新バージョンが利用可能です (クリックしてGitHub最新リリースを開く)">
+      <span class="left-update-icon">🎉</span>
+      <span class="left-update-text">UPDATE</span>
+      <span id="header-left-update-version" class="left-update-version"></span>
+    </a>
+
+    <!-- Header Logged Exploration Stats Group (Collapsible) -->
+    <div class="header-logged-group" id="header-logged-group" style="display: flex; align-items: center; background: rgba(255, 113, 0, 0.06); border: 1px solid rgba(255, 113, 0, 0.3); border-radius: 6px; padding: 2px 6px; gap: 8px; transition: all 0.25s ease;">
+      <div class="stat-prefix-badge" id="btn-toggle-header-stats" style="display: flex; flex-direction: column; align-items: flex-start; justify-content: center; padding: 2px 6px; background: rgba(255, 113, 0, 0.18); border-radius: 4px; border: 1px solid rgba(255, 113, 0, 0.4); flex-shrink: 0; cursor: pointer;" data-i18n-title="stat_header_toggle_tip" title="クリックして統計パネルを折り畳み / 展開">
+        <div style="display: flex; align-items: center; gap: 4px;">
+          <span style="font-size: 0.72rem; color: var(--ed-orange); font-weight: bold; white-space: nowrap;" data-i18n="stat_header_prefix">🚀 探査・記録済み</span>
+          <span id="header-stats-chevron" style="font-size: 0.65rem; color: var(--ed-orange); transition: transform 0.2s;">◀</span>
+          <a id="header-update-indicator" class="header-update-indicator" href="#" target="_blank" rel="noopener noreferrer" style="display: none; text-decoration: none;" data-i18n-title="header_update_available_tip" title="新バージョンが利用可能です (クリックしてGitHub最新リリースを開く)">UPDATE</a>
+        </div>
+        <span id="header-logged-period" style="font-size: 0.62rem; color: #fed7aa; white-space: nowrap;" data-i18n="stat_period_all">全期間</span>
+      </div>
+
+      <div class="header-stats" id="header-stats-content" style="margin: 0; padding: 0; border: none; display: flex; gap: 8px; row-gap: 3px; align-items: center; transition: all 0.25s ease; flex-wrap: wrap;">
+        <div class="stat-item" data-i18n-title="stat_systems_tip" title="訪問した星系の累計数">
+          <span class="stat-label" data-i18n="stat_systems">訪問星系</span>
+          <span id="stat-systems" class="stat-value">0</span>
+        </div>
+        <div class="stat-item" data-i18n-title="stat_bodies_tip" title="スキャンした全天体（恒星・惑星・衛星）の累計数">
+          <span class="stat-label" data-i18n="stat_bodies">スキャン天体</span>
+          <span id="stat-bodies" class="stat-value">0</span>
+        </div>
+        <div class="stat-item" data-i18n-title="stat_elw_tip" title="地球型惑星 (Earth-like World) の累計スキャン数">
+          <span class="stat-label" data-i18n="stat_elw">ELW</span>
+          <span id="stat-elw" class="stat-value highlight">0</span>
+        </div>
+        <div class="stat-item" data-i18n-title="stat_ww_tip" title="海洋惑星 (Water World) の累計スキャン数">
+          <span class="stat-label" data-i18n="stat_ww">WW</span>
+          <span id="stat-ww" class="stat-value" style="color: var(--ed-cyan);">0</span>
+        </div>
+        <div class="stat-item" data-i18n-title="stat_ammonia_tip" title="アンモニア惑星 (Ammonia World) の累計スキャン数">
+          <span class="stat-label" data-i18n="stat_ammonia">AW</span>
+          <span id="stat-ammonia" class="stat-value" style="color: var(--ed-cyan-dim);">0</span>
+        </div>
+        <div class="stat-item" data-i18n-title="stat_hmc_tip" title="高金属含有惑星・衛星 (High Metal Content) の累計スキャン数">
+          <span class="stat-label" data-i18n="stat_hmc">HMC</span>
+          <span id="stat-hmc" class="stat-value" style="color: #60a5fa;">0</span>
+        </div>
+        <div class="stat-item" data-i18n-title="stat_mr_tip" title="金属豊富惑星・衛星 (Metal Rich) の累計スキャン数">
+          <span class="stat-label" data-i18n="stat_mr">MR</span>
+          <span id="stat-mr" class="stat-value" style="color: #fb923c;">0</span>
+        </div>
+        <div class="stat-item" data-i18n-title="stat_icy_tip" title="氷惑星・衛星 (Icy Body) の累計スキャン数">
+          <span class="stat-label" data-i18n="stat_icy">Icy</span>
+          <span id="stat-icy" class="stat-value" style="color: #93c5fd;">0</span>
+        </div>
+        <div class="stat-item" data-i18n-title="stat_rocky_tip" title="岩石惑星・衛星 (Rocky Body) の累計スキャン数">
+          <span class="stat-label" data-i18n="stat_rocky">Rocky</span>
+          <span id="stat-rocky" class="stat-value" style="color: #d1d5db;">0</span>
+        </div>
+        <div class="stat-item" data-i18n-title="stat_rocky_ice_tip" title="岩石氷惑星・衛星 (Rocky Ice Body) の累計スキャン数">
+          <span class="stat-label" data-i18n="stat_rocky_ice">Rocky Icy</span>
+          <span id="stat-rocky-ice" class="stat-value" style="color: #a5f3fc;">0</span>
+        </div>
+        <!-- Gas Giants Group with full breakdown -->
+        <div class="stat-item stat-item-gg-group" data-i18n-title="stat_gg_tip" title="全ガスジャイアント（各種クラスI〜V・生命・ヘリウム等）の累計スキャン数内訳">
+          <div class="stat-gg-main">
+            <span class="stat-label" data-i18n="stat_gg">Gas Giants</span>
+            <span id="stat-gg" class="stat-value" style="color: #c084fc;">0</span>
+          </div>
+          <div class="stat-gg-breakdown">
+            <span class="stat-gg-sub" data-i18n-title="stat_gg_c1_tip" title="Sudarsky Class I"><span class="gg-tag">I</span><b id="stat-gg-c1">0</b></span>
+            <span class="stat-gg-sub" data-i18n-title="stat_gg_c2_tip" title="Sudarsky Class II"><span class="gg-tag">II</span><b id="stat-gg-c2">0</b></span>
+            <span class="stat-gg-sub" data-i18n-title="stat_gg_c3_tip" title="Sudarsky Class III"><span class="gg-tag">III</span><b id="stat-gg-c3">0</b></span>
+            <span class="stat-gg-sub" data-i18n-title="stat_gg_c4_tip" title="Sudarsky Class IV"><span class="gg-tag">IV</span><b id="stat-gg-c4">0</b></span>
+            <span class="stat-gg-sub" data-i18n-title="stat_gg_c5_tip" title="Sudarsky Class V"><span class="gg-tag">V</span><b id="stat-gg-c5">0</b></span>
+            <span class="stat-gg-sub" data-i18n-title="stat_gg_wbl_tip" title="Gas Giant with Water-based Life"><span class="gg-tag">WbL</span><b id="stat-gg-wbl">0</b></span>
+            <span class="stat-gg-sub" data-i18n-title="stat_gg_wblr_tip" title="Ringed Gas Giant with Water-based Life"><span class="gg-tag">WbL (R)</span><b id="stat-gg-wblr">0</b></span>
+            <span class="stat-gg-sub" data-i18n-title="stat_gg_abl_tip" title="Gas Giant with Ammonia-based Life"><span class="gg-tag">AbL</span><b id="stat-gg-abl">0</b></span>
+            <span class="stat-gg-sub" data-i18n-title="stat_gg_ablr_tip" title="Ringed Gas Giant with Ammonia-based Life"><span class="gg-tag">AbL (R)</span><b id="stat-gg-ablr">0</b></span>
+            <span class="stat-gg-sub" data-i18n-title="stat_gg_herich_tip" title="Helium-rich Gas Giant"><span class="gg-tag">He-Rich</span><b id="stat-gg-herich">0</b></span>
+            <span class="stat-gg-sub" data-i18n-title="stat_gg_he_tip" title="Helium Gas Giant"><span class="gg-tag">He</span><b id="stat-gg-he">0</b></span>
+            <span class="stat-gg-sub" data-i18n-title="stat_gg_wg_tip" title="Water Giant"><span class="gg-tag">WG</span><b id="stat-gg-wg">0</b></span>
+            <span class="stat-gg-sub stat-gg-sub-ggg" data-i18n-title="stat_gg_ggg_tip" title="Confirmed Green Gas Giant"><span class="gg-tag">🟢 GGG</span><b id="stat-ggg">0</b></span>
+          </div>
+        </div>
+        <!-- Summary Group (Bio Systems/Signals, Total Est. Value, and CMDR Location) -->
+        <div class="header-summary-group" id="header-summary-group" style="display: flex; align-items: center; gap: 14px; border-left: 1px solid rgba(255, 113, 0, 0.3); padding-left: 14px; flex-shrink: 0; white-space: nowrap;">
+          <div class="stat-item" data-i18n-title="stat_bio_tip" title="生体シグナルが検出された星系およびシグナル総数">
+            <span class="stat-label" data-i18n="stat_bio">生体 (Bio) 星系</span>
+            <span id="stat-bio" class="stat-value" style="color: var(--ed-green);">0</span>
+          </div>
+          <div class="stat-item" data-i18n-title="stat_payout_tip" title="全スキャン天体の累積探査総見込価値 (Cr)">
+            <span class="stat-label" data-i18n="stat_payout">累積探査総価値</span>
+            <span id="stat-total-payout" class="stat-value credits">0 Cr</span>
+          </div>
+          <!-- CMDR Location -->
+          <div class="stat-item" id="stat-cmdr-container" style="flex-shrink: 0;">
+            <span class="stat-label" style="color: var(--ed-orange);" data-i18n="stat_current_loc">📍 CMDR現在地</span>
+            <span id="stat-cmdr-loc" class="stat-value" style="font-size: 0.8rem; color: #fff; max-width: none; white-space: nowrap;">--</span>
+          </div>
+          <!-- CMDR Jump Distance -->
+          <div class="stat-item" id="stat-jump-dist-container" style="flex-shrink: 0;" data-i18n-title="stat_jump_dist_tip" title="初期ジャーナルから現在までの累計ジャンプ距離">
+            <span class="stat-label" style="color: var(--ed-cyan);" data-i18n="stat_jump_dist_label">🚀 累計ジャンプ</span>
+            <span id="stat-jump-dist" class="stat-value" style="font-size: 0.8rem; color: #fff; max-width: none; white-space: nowrap;">-- ly</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Header Update Notification Banner (Visible when header is collapsed and update is available) -->
+      <div id="header-update-banner" class="header-update-banner" style="display: none; align-items: center; gap: 6px; flex: 1; min-width: 0; overflow: hidden; padding: 0 4px;">
+        <a id="header-update-banner-link" class="header-update-banner-link" href="#" target="_blank" rel="noopener noreferrer" style="display: inline-flex; align-items: center; gap: 6px; flex: 1; min-width: 0; overflow: hidden; text-decoration: none; cursor: pointer;" data-i18n-title="header_update_tip" title="クリックしてGitHub最新リリースを開く">
+          <span class="update-badge" style="display: inline-flex; align-items: center; gap: 3px; font-size: 0.68rem; font-weight: bold; color: #00d2ff; background: rgba(0, 210, 255, 0.15); border: 1px solid rgba(0, 210, 255, 0.4); border-radius: 3px; padding: 1px 5px; flex-shrink: 0; transition: all 0.2s ease;">
+            <span>🎉</span>
+            <span data-i18n="header_update_badge">新Ver</span>
+            <span id="header-update-version">--</span>
+          </span>
+          <span id="header-update-summary" class="update-summary" style="font-size: 0.68rem; color: #e2e8f0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; line-height: 1.3;" title=""></span>
+        </a>
+        <a id="header-update-link" href="#" target="_blank" rel="noopener noreferrer" style="font-size: 0.65rem; color: #38bdf8; text-decoration: underline; white-space: nowrap; flex-shrink: 0; padding-left: 2px;" data-i18n="header_update_link" data-i18n-title="header_update_tip" title="クリックしてGitHubリリースノートを開く">詳細 / リリースノート ↗</a>
+      </div>
+    </div>
+
+    <div class="header-actions">
+      <!-- Manual Log Rescan Button (Instant access without opening settings) -->
+      <!-- Galactic Extremes Modal Button -->
+      <button id="btn-open-extremes" class="view-btn" style="padding: 4px 9px; font-size: 0.76rem; color: #a5f3fc; background: rgba(0, 210, 255, 0.12); border: 1px solid rgba(0, 210, 255, 0.4); display: flex; align-items: center; gap: 4px; cursor: pointer; flex-shrink: 0; font-weight: bold; border-radius: 4px;" data-i18n-title="tip_galactic_extremes" title="🌌 銀河極値・到達限界記録（北端・南端・東端・西端・天頂・天底）">
+        <span>🌌</span>
+        <span data-i18n="btn_galactic_extremes">銀河極値</span>
+      </button>
+
+      <button id="btn-rescan" class="view-btn" style="padding: 4px 9px; font-size: 0.76rem; color: #fed7aa; background: rgba(255, 113, 0, 0.15); border: 1px solid rgba(255, 113, 0, 0.5); display: flex; align-items: center; gap: 4px; cursor: pointer; flex-shrink: 0; font-weight: bold; border-radius: 4px;" data-i18n-title="tip_rescan_journal" title="最新のジャーナルログを即座に再解析・同期します">
+        <span id="rescan-icon">🔄</span>
+        <span id="rescan-text" data-i18n="btn_rescan">ログスキャン</span>
+      </button>
+
+      <!-- Import Shared Package Button (Disabled & Hidden) -->
+      <button id="btn-import-open" class="view-btn" style="display: none !important;" disabled data-i18n-title="tip_import_pkg" title="📥 共有星系パッケージ (.edsys) をインポート">
+        <span data-i18n="btn_import_pkg">📥 共有インポート</span>
+      </button>
+
+      <!-- Unified Settings Modal Button (Logs, UI Scaling, TTS, Credits) -->
+      <button id="btn-settings-open" class="view-btn" style="padding: 4px 9px; font-size: 0.76rem; color: #fff; background: rgba(255, 113, 0, 0.15); border: 1px solid var(--ed-orange); display: flex; align-items: center; gap: 4px; z-index: 9999; cursor: pointer; flex-shrink: 0; font-weight: bold; border-radius: 4px; box-shadow: 0 0 6px rgba(255, 113, 0, 0.2);" data-i18n-title="tip_settings_btn" title="⚙️ 設定 & 文字サイズ & ログ同期 & TTS & 謝辞">
+        <span data-i18n="btn_settings">⚙️ 設定</span>
+      </button>
+
+      <!-- Pane Toggle Buttons (Left & Right Pane Collapse / Expand) -->
+      <div class="pane-toggle-group" style="display: flex; gap: 2px; background: var(--bg-card); padding: 2px; border-radius: 4px; border: 1px solid var(--border-color); flex-shrink: 0;">
+        <button id="btn-toggle-left-pane" class="view-btn" style="padding: 3px 7px; font-size: 0.72rem; display: flex; align-items: center; gap: 3px;" data-i18n-title="tip_toggle_left_pane" title="星系リストを開閉 (Ctrl+[)">
+          <span id="icon-toggle-left-pane">◀</span> <span data-i18n="btn_toggle_left_pane">星系</span>
+        </button>
+        <button id="btn-toggle-right-pane" class="view-btn" style="padding: 3px 7px; font-size: 0.72rem; display: flex; align-items: center; gap: 3px;" data-i18n-title="tip_toggle_right_pane" title="インスペクターを開閉 (Ctrl+])">
+          <span data-i18n="btn_toggle_right_pane">天体詳細</span> <span id="icon-toggle-right-pane">▶</span>
+        </button>
+      </div>
+
+      <!-- Layout Switcher Button (1-Column / 2-Columns) -->
+      <button id="btn-toggle-layout" class="view-btn" style="padding: 4px 8px; font-size: 0.76rem; color: #38bdf8; background: rgba(56, 189, 248, 0.15); border: 1px solid #38bdf8; display: flex; align-items: center; gap: 4px; cursor: pointer; flex-shrink: 0; font-weight: bold; border-radius: 4px;" data-i18n-title="tip_toggle_layout" title="UIレイアウト切替 (1列 / 2列)">
+        <span id="layout-toggle-icon">◫</span>
+        <span id="layout-toggle-text" data-i18n="btn_layout_2col">2列表示</span>
+      </button>
+
+      <!-- Language Switcher -->
+      <div class="lang-switch-group" style="display: flex; gap: 2px; background: var(--bg-card); padding: 2px; border-radius: 4px; border: 1px solid var(--border-color); flex-shrink: 0;">
+        <button id="btn-lang-ja" class="view-btn active" style="padding: 3px 6px; font-size: 0.72rem;">JP</button>
+        <button id="btn-lang-en" class="view-btn" style="padding: 3px 6px; font-size: 0.72rem;">EN</button>
+      </div>
+    </div>
+  </header>
+

@@ -1,0 +1,505 @@
+/**
+ * utils.js - Core Formatting, Domain Parsers & Utility Functions
+ * Elite Dangerous Journal Analyzer
+ */
+
+// Numeric & Unit Formatting
+function formatCredits(num) {
+  if (!num) return '0 Cr';
+  return Number(num).toLocaleString() + ' Cr';
+}
+
+function formatKiloCredits(num) {
+  if (num === null || num === undefined || isNaN(num) || Number(num) <= 0) return null;
+  const val = Number(num);
+  const kVal = val / 1000;
+  if (kVal >= 100) {
+    return `${Math.round(kVal)}k`;
+  }
+  const fixed = kVal.toFixed(1);
+  return `${parseFloat(fixed)}k`;
+}
+
+function formatNumber(num, digits = 2) {
+  if (num === null || num === undefined) return '--';
+  return Number(num).toLocaleString(undefined, { maximumFractionDigits: digits });
+}
+
+function formatDistance(ls) {
+  if (ls === null || ls === undefined) return '--';
+  if (ls < 1) return (ls * 299792).toFixed(0) + ' km';
+  if (ls > 1000000) return (ls / 1000000).toFixed(2) + ' M ls';
+  return ls.toLocaleString(undefined, { maximumFractionDigits: 1 }) + ' ls';
+}
+
+// App Language Helper
+function getAppLang() {
+  if (typeof currentLang !== 'undefined' && (currentLang === 'en' || currentLang === 'ja')) {
+    return currentLang;
+  }
+  if (typeof window !== 'undefined' && window.currentLang) {
+    return window.currentLang;
+  }
+  return 'ja';
+}
+
+function formatSecondsToDaysOrHours(sec) {
+  if (!sec) return '--';
+  const hours = Math.abs(sec) / 3600;
+  const lang = getAppLang();
+  const hUnit = (typeof t === 'function' ? t('hours_unit') : null) || (lang === 'en' ? 'h' : '時間');
+  const dUnit = (typeof t === 'function' ? t('days_unit') : null) || (lang === 'en' ? 'd' : '日');
+  if (hours < 48) return `${hours.toFixed(1)} ${hUnit}`;
+  const days = hours / 24;
+  return `${days.toFixed(1)} ${dUnit}`;
+}
+
+// HTML Escaper
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+// Markdown Parser
+function parseMarkdown(md) {
+  if (!md) return '';
+  let escaped = md
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+
+  escaped = escaped.replace(/```([\s\S]*?)```/g, (match, p1) => `<pre><code>${p1}</code></pre>`);
+  escaped = escaped.replace(/`([^`]+)`/g, '<code>$1</code>');
+  escaped = escaped.replace(/^### (.*$)/gim, '<h3>$1</h3>');
+  escaped = escaped.replace(/^## (.*$)/gim, '<h2>$1</h2>');
+  escaped = escaped.replace(/^# (.*$)/gim, '<h1>$1</h1>');
+  escaped = escaped.replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>');
+  escaped = escaped.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+  escaped = escaped.replace(/\*(.*?)\*/g, '<em>$1</em>');
+  escaped = escaped.replace(/^\> (.*$)/gim, '<blockquote>$1</blockquote>');
+  escaped = escaped.replace(/^[\*\-] (.*$)/gim, '<li>$1</li>');
+  escaped = escaped.replace(/(<li>[\s\S]*?<\/li>)/g, '<ul>$1</ul>');
+  escaped = escaped.replace(/<\/ul>\s*<ul>/g, '');
+  escaped = escaped.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" style="color: var(--ed-cyan);">$1</a>');
+  escaped = escaped.replace(/\n/g, '<br>');
+  escaped = escaped.replace(/<\/(h[1-3]|pre|ul|blockquote)><br>/g, '</$1>');
+  escaped = escaped.replace(/<br><(h[1-3]|pre|ul|blockquote)/g, '<$1');
+  return escaped;
+}
+
+// Ring Classification Parser
+function parseRingClass(rawClass) {
+  const lang = getAppLang();
+  if (!rawClass || rawClass === '不明' || String(rawClass).toLowerCase() === 'unknown' || String(rawClass).toLowerCase() === 'eringclass_unknown') {
+    return {
+      key: 'unknown',
+      nameEn: 'Unknown',
+      nameJa: '不明',
+      name: lang === 'en' ? 'Unknown' : '不明',
+      color: '#94a3b8',
+      icon: '💍',
+      bg: 'rgba(148,163,184,0.15)',
+      border: 'rgba(148,163,184,0.4)',
+      descriptionEn: '',
+      descriptionJa: '',
+      description: ''
+    };
+  }
+  const lower = rawClass.toLowerCase();
+  let res;
+  if (lower.includes('icy')) {
+    res = {
+      key: 'icy',
+      nameEn: 'Icy',
+      nameJa: '氷',
+      icon: '❄️',
+      color: '#38bdf8',
+      bg: 'rgba(56, 189, 248, 0.18)',
+      border: 'rgba(56, 189, 248, 0.45)',
+      descriptionEn: 'Fleet Carrier fuel (Tritium) / Low Temperature Diamonds (LTD) source',
+      descriptionJa: 'Fleet Carrier燃料 (Tritium) / 低温ダイヤモンド (LTD) 産地'
+    };
+  } else if (lower.includes('metallic') || lower.includes('metalic')) {
+    res = {
+      key: 'metallic',
+      nameEn: 'Metallic',
+      nameJa: '金属質',
+      icon: '🪙',
+      color: '#facc15',
+      bg: 'rgba(250, 204, 21, 0.18)',
+      border: 'rgba(250, 204, 21, 0.5)',
+      descriptionEn: 'High-value laser mining (Platinum, Painite, etc.) optimal',
+      descriptionJa: 'プラチナ (Platinum) / ペイン石 (Painite) 等 最も高価値なレーザー採掘適性'
+    };
+  } else if (lower.includes('metal')) {
+    res = {
+      key: 'metal_rich',
+      nameEn: 'Metal Rich',
+      nameJa: '金属豊富',
+      icon: '🪐',
+      color: '#fb923c',
+      bg: 'rgba(251, 146, 60, 0.18)',
+      border: 'rgba(251, 146, 60, 0.5)',
+      descriptionEn: 'Industrial and precious metal commodities',
+      descriptionJa: '各種工業用・貴金属素材'
+    };
+  } else if (lower.includes('rocky')) {
+    res = {
+      key: 'rocky',
+      nameEn: 'Rocky',
+      nameJa: '岩石',
+      icon: '🪨',
+      color: '#cbd5e1',
+      bg: 'rgba(203, 213, 225, 0.18)',
+      border: 'rgba(203, 213, 225, 0.45)',
+      descriptionEn: 'High-value deep core mining (Musgravite, Alexandrite, etc.)',
+      descriptionJa: 'マスグラバイト / アレキサンドライト等 高額深部鉱石コア採掘適性'
+    };
+  } else {
+    const cleanName = rawClass.replace('eRingClass_', '');
+    const isUnk = !cleanName || cleanName === '不明' || cleanName.toLowerCase() === 'unknown';
+    const nameEn = isUnk ? 'Unknown' : cleanName;
+    const nameJa = isUnk ? '不明' : cleanName;
+    res = {
+      key: isUnk ? 'unknown' : 'other',
+      nameEn: nameEn,
+      nameJa: nameJa,
+      icon: '💍',
+      color: isUnk ? '#94a3b8' : '#a78bfa',
+      bg: isUnk ? 'rgba(148,163,184,0.15)' : 'rgba(167, 139, 250, 0.18)',
+      border: isUnk ? 'rgba(148,163,184,0.4)' : 'rgba(167, 139, 250, 0.45)',
+      descriptionEn: '',
+      descriptionJa: ''
+    };
+  }
+  res.name = lang === 'en' ? res.nameEn : res.nameJa;
+  res.description = lang === 'en' ? res.descriptionEn : res.descriptionJa;
+  return res;
+}
+
+// Reserve Level Parser
+function parseReserveLevel(reserve) {
+  if (!reserve) return null;
+  const map = {
+    'pristineresources': { en: 'Pristine', ja: '無傷 (最高)', color: '#22c55e', icon: '💎' },
+    'majorresources': { en: 'Major', ja: '主要', color: '#38bdf8', icon: '✨' },
+    'commonresources': { en: 'Common', ja: '普通', color: '#94a3b8', icon: '⚖️' },
+    'lowresources': { en: 'Low', ja: '低', color: '#f59e0b', icon: '⚠️' },
+    'depletedresources': { en: 'Depleted', ja: '枯渇', color: '#ef4444', icon: '🚫' },
+  };
+  const key = reserve.toLowerCase().replace(/[^a-z]/g, '');
+  const base = map[key] || { en: reserve, ja: reserve, color: '#94a3b8', icon: '📊' };
+  const lang = getAppLang();
+  return {
+    ...base,
+    name: lang === 'en' ? base.en : base.ja,
+    label: lang === 'en' ? base.en : `${base.en} (${base.ja})`
+  };
+}
+
+// Star Spectrum Styles
+function getStarTypeStyle(starType) {
+  if (!starType) return { bg: '#181e2b', text: '#e6edf3', border: '#2a3449' };
+  const st = starType.toUpperCase();
+
+  // Black Hole
+  if (st === 'H' || st.includes('BLACKHOLE')) {
+    return { bg: '#050508', text: '#d8b4fe', border: '#a855f7' };
+  }
+  // Neutron Star
+  if (st === 'N') {
+    return { bg: '#00f2fe', text: '#02101e', border: '#38ef7d' };
+  }
+  // White Dwarf
+  if (st.startsWith('D')) {
+    return { bg: '#e0f2fe', text: '#0c4a6e', border: '#38bdf8' };
+  }
+  // Wolf-Rayet
+  if (st.startsWith('W')) {
+    return { bg: '#ec4899', text: '#022c22', border: '#f472b6' };
+  }
+  // Carbon stars
+  if (st.startsWith('C') || st.startsWith('MS') || st.startsWith('S')) {
+    return { bg: '#7f1d1d', text: '#67e8f9', border: '#dc2626' };
+  }
+  // Proto-stars / Young Stellar Objects
+  if (st.startsWith('AEBE')) {
+    return { bg: '#3b0764', text: '#d8b4fe', border: '#c084fc' }; // Herbig Ae/Be -> Purple
+  }
+  if (st.startsWith('TTS')) {
+    return { bg: '#831843', text: '#fbcfe8', border: '#f472b6' }; // T Tauri -> Pink
+  }
+  // Main sequence / Giants
+  if (st.startsWith('O')) {
+    return { bg: '#2563eb', text: '#fde047', border: '#60a5fa' }; // Blue -> Yellow text
+  }
+  if (st.startsWith('B')) {
+    return { bg: '#60a5fa', text: '#0f172a', border: '#93c5fd' }; // Blue-white -> Dark text
+  }
+  if (st.startsWith('A')) {
+    return { bg: '#f8fafc', text: '#020617', border: '#cbd5e1' }; // White -> Black text
+  }
+  if (st.startsWith('F')) {
+    return { bg: '#fef08a', text: '#1e1b4b', border: '#fde047' }; // Yellow-white -> Navy text
+  }
+  if (st.startsWith('G')) {
+    return { bg: '#eab308', text: '#0f172a', border: '#facc15' }; // Yellow -> Dark text
+  }
+  if (st.startsWith('K')) {
+    return { bg: '#f97316', text: '#082f49', border: '#fb923c' }; // Orange -> Dark cyan text
+  }
+  if (st.startsWith('M')) {
+    return { bg: '#dc2626', text: '#f0fdf4', border: '#ef4444' }; // Red -> White/Mint text
+  }
+  // Brown dwarfs
+  if (st.startsWith('L')) {
+    return { bg: '#9a3412', text: '#e0f2fe', border: '#c2410c' }; // Brown-red -> Light blue text
+  }
+  if (st.startsWith('T')) {
+    return { bg: '#581c87', text: '#fde047', border: '#7e22ce' }; // Brown-purple -> Yellow text
+  }
+  if (st.startsWith('Y')) {
+    return { bg: '#3b0764', text: '#4ade80', border: '#6b21a8' }; // Dark violet -> Light green text
+  }
+
+  return { bg: '#334155', text: '#f8fafc', border: '#64748b' };
+}
+
+// Celestial Body Icons & Badges
+function getBodyIconClass(body) {
+  if (!body) return 'icon-rocky';
+  if (body.star_type) {
+    const st = body.star_type.toUpperCase();
+    if (st === 'H' || st === 'SUPERMASSIVEBLACKHOLE') return 'icon-black-hole';
+    if (st === 'N') return 'icon-neutron';
+    return 'icon-star';
+  }
+  const pc = (body.planet_class || body.PlanetClass || body.sub_type || '').toLowerCase();
+  if (pc.includes('gas giant') || pc.includes('water giant') || pc.includes('gas') || pc.includes('ガス')) return 'icon-gas';
+  if (pc.includes('earthlike') || pc.includes('earth-like') || pc.includes('地球型')) return 'icon-elw';
+  if (pc.includes('ammonia') || pc.includes('アンモニア')) return 'icon-ammonia';
+  if (pc.includes('water world') || pc.includes('海洋惑星')) return 'icon-water';
+  if (pc.includes('high metal') || pc.includes('metal rich') || pc.includes('metal-rich') || pc.includes('高金属') || pc.includes('金属豊富')) return 'icon-hmc';
+  if (pc.includes('rocky ice') || pc.includes('rocky-ice') || pc.includes('岩石氷')) return 'icon-icy';
+  if (pc.includes('rocky') || pc.includes('岩石')) return 'icon-rocky';
+  if (pc.includes('icy') || pc.includes('氷')) return 'icon-icy';
+  if (pc.includes('gas giant') || pc.includes('water giant') || pc.includes('gas') || pc.includes('ガス')) return 'icon-gas';
+  return 'icon-rocky';
+}
+
+function getBodyIconLabel(body) {
+  if (!body) return 'P';
+  if (body.star_type) {
+    if (body.star_type.toUpperCase() === 'SUPERMASSIVEBLACKHOLE') return 'SMBH';
+    return body.star_type;
+  }
+  const pc = (body.planet_class || body.PlanetClass || body.sub_type || '').toLowerCase();
+  if (pc.includes('gas giant') || pc.includes('gas') || pc.includes('ガス')) {
+    if (pc.includes('ammonia') || pc.includes('アンモニア')) return 'AW-GG';
+    if (pc.includes('water') || pc.includes('海洋') || pc.includes('水生')) return 'WW-GG';
+    return 'GG';
+  }
+  if (pc.includes('earthlike') || pc.includes('earth-like') || pc.includes('地球型')) return 'ELW';
+  if (pc.includes('water world') || pc.includes('海洋惑星')) return 'WW';
+  if (pc.includes('water giant')) return 'WG';
+  if (pc.includes('ammonia') || pc.includes('アンモニア')) return 'AW';
+  if (pc.includes('high metal') || pc.includes('高金属')) return 'HMC';
+  if (pc.includes('metal rich') || pc.includes('metal-rich') || pc.includes('金属豊富')) return 'MR';
+  if (pc.includes('gas giant') || pc.includes('gas') || pc.includes('ガス')) return 'GG';
+  if (pc.includes('rocky ice') || pc.includes('rocky-ice') || pc.includes('岩石氷')) return 'RI';
+  if (pc.includes('rocky') || pc.includes('岩石')) return 'R';
+  if (pc.includes('icy') || pc.includes('氷')) return 'I';
+  return 'P';
+}
+
+// Module Settings (Exobiology, Rhino Mining, Population/Faction)
+const defaultModuleSettings = {
+  exobiology: true,
+  rhino: false,
+  faction: false
+};
+
+function getModuleSettings() {
+  try {
+    const raw = (typeof localStorage !== 'undefined') ? localStorage.getItem('ed_module_settings') : null;
+    if (raw) {
+      return { ...defaultModuleSettings, ...JSON.parse(raw) };
+    }
+  } catch (e) {
+    console.warn('Failed to load module settings:', e);
+  }
+  return { ...defaultModuleSettings };
+}
+
+function saveModuleSettings(settings) {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('ed_module_settings', JSON.stringify(settings));
+    }
+    if (typeof fetch === 'function') {
+      fetch('/api/module_settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settings)
+      }).catch(() => {});
+    }
+  } catch (e) {
+    console.warn('Failed to save module settings:', e);
+  }
+}
+
+function formatSolarMass(val) {
+  if (val === null || val === undefined || isNaN(val)) return null;
+  const num = Number(val);
+  if (num <= 0) return '0';
+  if (num >= 100) return num.toFixed(1);
+  if (num >= 1) return num.toFixed(2);
+  if (num >= 0.01) return num.toFixed(3);
+  return num.toPrecision(2);
+}
+
+function formatStarSpectralClass(starType, subclass, luminosity) {
+  if (!starType) return '';
+  const sub = (subclass !== null && subclass !== undefined && subclass !== '') ? String(subclass) : '';
+  const lum = (luminosity || '').trim();
+  if (lum) {
+    return `${starType}${sub} ${lum}`;
+  }
+  return `${starType}${sub}`;
+}
+
+function getStarTypeName(starType, luminosity) {
+  if (!starType) return '';
+  const lang = (typeof getAppLang === 'function') ? getAppLang() : 'ja';
+  const st = starType.trim().toUpperCase();
+  const lum = (luminosity || '').trim().toUpperCase();
+
+  let lumName = '';
+  if (lum.startsWith('IA0') || lum.startsWith('IA') || lum.startsWith('IB') || lum === 'I' || lum.startsWith('IAB')) {
+    lumName = lang === 'ja' ? '超巨星' : 'Supergiant';
+  } else if (lum.startsWith('II')) {
+    lumName = lang === 'ja' ? '輝巨星' : 'Bright Giant';
+  } else if (lum.startsWith('III')) {
+    lumName = lang === 'ja' ? '巨星' : 'Giant';
+  } else if (lum.startsWith('IV')) {
+    lumName = lang === 'ja' ? '準巨星' : 'Subgiant';
+  } else if (lum.startsWith('V')) {
+    lumName = lang === 'ja' ? '主系列星' : 'Main Sequence';
+  } else if (lum.startsWith('VI')) {
+    lumName = lang === 'ja' ? '準矮星' : 'Subdwarf';
+  } else if (lum.startsWith('VII')) {
+    lumName = lang === 'ja' ? '白色矮星' : 'White Dwarf';
+  }
+
+  const starNamesJa = {
+    'O': '青白色星',
+    'B': '青白色星',
+    'A': '青白色星',
+    'F': '白色星',
+    'G': '白黄色星',
+    'K': '黄橙色星',
+    'M': '赤色矮星',
+    'L': '赤褐色矮星',
+    'T': '褐色矮星',
+    'Y': '褐色矮星',
+    'TTS': 'T Tauri星',
+    'AEBE': 'ハービッグAe/Be型星',
+    'W': 'ウォルフ・ライエ星',
+    'C': '炭素星',
+    'D': '白色矮星',
+    'N': '中性子星',
+    'H': 'ブラックホール',
+    'SUPERMASSIVEBLACKHOLE': '超大質量ブラックホール'
+  };
+
+  const starNamesEn = {
+    'O': 'Blue-White Star',
+    'B': 'Blue-White Star',
+    'A': 'Blue-White Star',
+    'F': 'White Star',
+    'G': 'White-Yellow Star',
+    'K': 'Yellow-Orange Star',
+    'M': 'Red Dwarf Star',
+    'L': 'Brown Dwarf Star',
+    'T': 'Brown Dwarf Star',
+    'Y': 'Brown Dwarf Star',
+    'TTS': 'T Tauri Star',
+    'AEBE': 'Herbig Ae/Be Star',
+    'W': 'Wolf-Rayet Star',
+    'C': 'Carbon Star',
+    'D': 'White Dwarf Star',
+    'N': 'Neutron Star',
+    'H': 'Black Hole',
+    'SUPERMASSIVEBLACKHOLE': 'Supermassive Black Hole'
+  };
+
+  let baseName = '';
+  for (const [key, name] of Object.entries(lang === 'ja' ? starNamesJa : starNamesEn)) {
+    if (st === key || st.startsWith(key)) {
+      baseName = name;
+      break;
+    }
+  }
+
+  if (lumName) {
+    if (baseName && baseName.endsWith('星') && lang === 'ja') {
+      const prefix = baseName.replace(/星$/, '');
+      return `${prefix} ${lumName}`;
+    }
+    return baseName ? `${baseName} (${lumName})` : lumName;
+  }
+  return baseName || starType;
+}
+
+// Window / Global Export
+if (typeof window !== 'undefined') {
+  window.getAppLang = getAppLang;
+  window.formatCredits = formatCredits;
+  window.formatNumber = formatNumber;
+  window.formatDistance = formatDistance;
+  window.formatSecondsToDaysOrHours = formatSecondsToDaysOrHours;
+  window.escapeHtml = escapeHtml;
+  window.parseMarkdown = parseMarkdown;
+  window.parseRingClass = parseRingClass;
+  window.parseReserveLevel = parseReserveLevel;
+  window.getStarTypeStyle = getStarTypeStyle;
+  window.getBodyIconClass = getBodyIconClass;
+  window.getBodyIconLabel = getBodyIconLabel;
+  window.defaultModuleSettings = defaultModuleSettings;
+  window.getModuleSettings = getModuleSettings;
+  window.saveModuleSettings = saveModuleSettings;
+  window.formatSolarMass = formatSolarMass;
+  window.formatStarSpectralClass = formatStarSpectralClass;
+  window.getStarTypeName = getStarTypeName;
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    getAppLang,
+    formatCredits,
+    formatNumber,
+    formatDistance,
+    formatSecondsToDaysOrHours,
+    escapeHtml,
+    parseMarkdown,
+    parseRingClass,
+    parseReserveLevel,
+    getStarTypeStyle,
+    getBodyIconClass,
+    getBodyIconLabel,
+    defaultModuleSettings,
+    getModuleSettings,
+    saveModuleSettings,
+    formatSolarMass,
+    formatStarSpectralClass,
+    getStarTypeName
+  };
+}
+

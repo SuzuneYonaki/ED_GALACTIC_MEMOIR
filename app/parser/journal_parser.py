@@ -1,0 +1,2228 @@
+import os
+import re
+import json
+import glob
+from pathlib import Path
+from datetime import datetime
+
+from app.db.database import get_db_connection, save_or_merge_mining_site, invalidate_celestial_stats_cache
+from app.parser.value_calculator import calculate_body_value
+from app.parser.exobiology import get_species_value, evaluate_high_value_bio
+from app.parser.bioscan.adapters import system_context_from_db
+from app.analyzer.anomaly_finder import detect_anomalies
+from app.services.tts_service import tts_service
+from app.services.edsm_service import edsm_service
+from app.live.rhino.note_integrator import update_body_note_in_db
+from app.live.telemetry import telemetry_tracker
+from app.addons import addon_manager
+
+CODEX_GGG_PATTERN = re.compile(r"^\$Codex_Ent_Green_(?P<variant>.+?)_Name;?$", re.IGNORECASE)
+
+# Empty-equivalent result shape matching rarity_scorer.calculate_celestial_rarity's
+# own fallback for invalid input -- reused here as the "addon disabled" default so
+# every downstream .get("tags") / .get("ggg_evaluation") call keeps working unchanged.
+_EMPTY_RARITY_RESULT = {
+    "rarity_score": 0,
+    "score": 0,
+    "tags": [],
+    "details": {"breakdown": []},
+    "ggg_evaluation": {
+        "score": 0,
+        "is_candidate": False,
+        "alert_level": None,
+        "tts_message": None
+    }
+}
+
+
+def _compute_rarity(body_dict: dict, **kwargs) -> dict:
+    """Delegates to the rarity_scorer addon's provider if enabled, else
+    returns the empty-equivalent default (see _EMPTY_RARITY_RESULT)."""
+    provider = addon_manager.get_provider("rarity_score")
+    if provider is None:
+        return _EMPTY_RARITY_RESULT
+    return provider(body_dict, **kwargs)
+
+
+def _compute_exobiology_predictions(body_dict: dict, system_context=None) -> list:
+    """Delegates to the exobiology_prediction addon's provider if enabled,
+    else returns an empty list (already a normal state elsewhere in this
+    file, e.g. when bio_signals == 0). `system_context` carries the system's
+    stars and planet classes for the species rules."""
+    provider = addon_manager.get_provider("exobiology_predict_body")
+    if provider is None:
+        return []
+    if system_context is not None:
+        return provider(body_dict, system_context=system_context)
+    return provider(body_dict)
+
+GGG_VARIANTS_MAP: dict[str, tuple[str, str]] = {
+    "sudarsky_class_i": ("スダルスキー・クラス1 ガスジャイアント", "Sudarsky Class I Gas Giant"),
+    "sudarsky_class_ii": ("スダルスキー・クラス2 ガスジャイアント", "Sudarsky Class II Gas Giant"),
+    "sudarsky_class_iii": ("スダルスキー・クラス3 ガスジャイアント", "Sudarsky Class III Gas Giant"),
+    "sudarsky_class_iv": ("スダルスキー・クラス4 ガスジャイアント", "Sudarsky Class IV Gas Giant"),
+    "sudarsky_class_v": ("スダルスキー・クラス5 ガスジャイアント", "Sudarsky Class V Gas Giant"),
+    "water_life": ("水生生命保有ガスジャイアント", "Gas Giant with Water-based Life"),
+    "gas_giant_water_life": ("水生生命保有ガスジャイアント", "Gas Giant with Water-based Life"),
+    "ammonia_life": ("アンモニア生命保有ガスジャイアント", "Gas Giant with Ammonia-based Life"),
+    "gas_giant_ammonia_life": ("アンモニア生命保有ガスジャイアント", "Gas Giant with Ammonia-based Life"),
+    "helium_rich": ("高ヘリウム含有ガスジャイアント", "Helium-rich Gas Giant"),
+    "helium_rich_gas_giant": ("高ヘリウム含有ガスジャイアント", "Helium-rich Gas Giant"),
+    "helium": ("ヘリウムガスジャイアント", "Helium Gas Giant"),
+    "helium_gas_giant": ("ヘリウムガスジャイアント", "Helium Gas Giant"),
+    "water_giant": ("ウォーター・ジャイアント", "Water Giant"),
+}
+
+
+def resolve_ggg_variant(entry_name: str) -> tuple[str, str, str] | None:
+    """
+    Parses a Codex entry name to determine if it is a Green Gas Giant (GGG).
+    Returns (raw_variant, tts_speech_name, en_name) or None if not a GGG.
+    """
+    if not entry_name or not isinstance(entry_name, str):
+        return None
+    match = CODEX_GGG_PATTERN.match(entry_name.strip())
+    if not match:
+        return None
+    raw_variant = match.group("variant")
+    v_key = raw_variant.lower().strip()
+    if v_key in GGG_VARIANTS_MAP:
+        tts_speech_name, en_name = GGG_VARIANTS_MAP[v_key]
+    else:
+        fallback_name = raw_variant.replace("_", " ").title()
+        tts_speech_name = fallback_name
+        en_name = fallback_name
+    return raw_variant, tts_speech_name, en_name
+
+
+def is_matching_ggg_planet_class(variant_en: str | None, planet_class: str | None) -> bool:
+    """Checks whether a body's planet_class matches a GGG variant name (e.g. Sudarsky Class III Gas Giant)."""
+    if not variant_en or not planet_class:
+        return False
+    v = variant_en.lower()
+    pc = planet_class.lower()
+    if "class i " in v and ("class i gas giant" in pc and "class ii" not in pc):
+        return True
+    if "class ii " in v and ("class ii gas giant" in pc and "class iii" not in pc):
+        return True
+    if "class iii " in v and "class iii gas giant" in pc:
+        return True
+    if "class iv " in v and "class iv gas giant" in pc:
+        return True
+    if "class v " in v and "class v gas giant" in pc:
+        return True
+    if "water-based life" in v and "water" in pc and "life" in pc:
+        return True
+    if "ammonia-based life" in v and "ammonia" in pc and "life" in pc:
+        return True
+    if "helium-rich" in v and "helium" in pc and "rich" in pc:
+        return True
+    if "helium gas giant" in v and "helium" in pc and "rich" not in pc:
+        return True
+    if "water giant" in v and "water giant" in pc:
+        return True
+    return False
+
+
+def resolve_ggg_variant_name_by_lang(variant_name: str | None, lang: str = "ja") -> str:
+    """
+    Resolves GGG variant name to either localized Japanese or English display/TTS text.
+    """
+    if not variant_name:
+        return "Gas Giant" if lang == "en" else "ガスジャイアント"
+    v_clean = variant_name.strip()
+    v_lower = v_clean.lower().replace(" ", "_")
+    for key, (ja_val, en_val) in GGG_VARIANTS_MAP.items():
+        if v_lower == key or v_clean == ja_val or v_clean.lower() == en_val.lower():
+            return en_val if lang == "en" else ja_val
+    for key, (ja_val, en_val) in GGG_VARIANTS_MAP.items():
+        if key in v_lower or ja_val in v_clean or en_val.lower() in v_clean.lower():
+            return en_val if lang == "en" else ja_val
+    return v_clean
+
+
+def get_app_language() -> str:
+    """Reads configured UI/app language from app_settings.json."""
+    try:
+        from app.config import DATA_DIR
+        app_settings_file = DATA_DIR / "app_settings.json"
+        if app_settings_file.exists():
+            with open(app_settings_file, "r", encoding="utf-8") as f:
+                import json
+                return json.load(f).get("language", "ja")
+    except Exception:
+        pass
+    return "ja"
+
+
+def is_ggg_tts_enabled() -> bool:
+    """Checks tts_settings.json to see if GGG audio alerts are enabled."""
+    return get_ggg_tts_config().get("enabled", True)
+
+
+def get_ggg_tts_config() -> dict:
+    """Checks tts_settings.json for GGG audio alert settings and templates.
+    Confirmed (Codex-verified) sightings only -- candidate GGG detections
+    are never voiced."""
+    cfg = {
+        "enabled": True,
+        "confirmed_enabled": True,
+        "engine": "voicevox",
+        "mode": "both",
+        "confirmed_text": "{body}はグリーンガスジャイアント、目視確認を推奨。種別は、{variant}です。",
+    }
+    try:
+        from app.config import DATA_DIR
+        settings_file = DATA_DIR / "tts_settings.json"
+        if settings_file.exists():
+            with open(settings_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if not data.get("enabled", True):
+                    cfg["enabled"] = False
+                    return cfg
+                cfg["enabled"] = bool(data.get("gggEnabled", True))
+                cfg["confirmed_enabled"] = bool(data.get("gggConfirmedEnabled", True))
+                cfg["engine"] = data.get("engine", "voicevox")
+                cfg["mode"] = data.get("gggMode", "both")
+                cfg["confirmed_text"] = data.get("gggConfirmedText") or cfg["confirmed_text"]
+    except Exception:
+        pass
+    return cfg
+
+
+def get_high_bio_tts_config() -> dict:
+    """Checks tts_settings.json for high-value exobiology alert settings."""
+    cfg = {
+        "enabled": False,
+        "engine": "voicevox",
+        "mode": "both",
+        "threshold": 40_000_000,
+        "threshold_type": "bonus",
+        "text": "{body}、高額生物反応です。見込額{value}クレジット。"
+    }
+    try:
+        from app.config import DATA_DIR
+        settings_file = DATA_DIR / "tts_settings.json"
+        if settings_file.exists():
+            with open(settings_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if not data.get("enabled", True):
+                    cfg["enabled"] = False
+                    return cfg
+                cfg["enabled"] = bool(data.get("highBioEnabled", False))
+                cfg["engine"] = data.get("engine", "voicevox")
+                cfg["mode"] = data.get("highBioMode", "both")
+                cfg["text"] = data.get("highBioText") or cfg["text"]
+                if "highBioThreshold" in data and data["highBioThreshold"] is not None:
+                    try:
+                        cfg["threshold"] = int(data["highBioThreshold"])
+                    except (ValueError, TypeError):
+                        pass
+                cfg["threshold_type"] = data.get("highBioThresholdType", "bonus")
+    except Exception:
+        pass
+    return cfg
+
+
+class JournalParser:
+    def __init__(self, db_conn=None, event_callback=None, is_live: bool = False):
+        self.conn = db_conn or get_db_connection()
+        self.cursor = self.conn.cursor()
+        self.dirty_systems = set()
+        self.event_callback = event_callback
+        self.is_live = is_live
+        self._announced_high_bio_bodies = set()
+        self._announced_ggg_confirmed = set()
+        
+        # State tracking for SRV and surface activities
+        self.current_system_address = None
+        self.current_star_system = None
+        self.current_body_id = None
+        self.current_body_name = None
+        self.current_body_type = None
+        self.in_srv = False
+        self.srv_type = None
+        self.current_latitude = None
+        self.current_longitude = None
+        self._has_unlocated_mining = False
+
+    def _check_and_trigger_high_bio_alert(
+        self,
+        sys_addr: int | None,
+        body_id: int | None,
+        body_name: str,
+        bio_predictions: list,
+        bio_signals: int | None = None
+    ) -> bool:
+        """
+        Triggers high-value exobiology TTS alert via backend TTSService if enabled,
+        evaluating predictions using evaluate_high_value_bio.
+        """
+        if not self.is_live:
+            return False
+
+        cfg = get_high_bio_tts_config()
+        if not cfg.get("enabled"):
+            return False
+
+        if cfg.get("mode") not in ("both", "tts"):
+            return False
+
+        if cfg.get("engine") == "webspeech":
+            return False
+
+        if not bio_predictions:
+            return False
+
+        alert_key = (sys_addr or 0, body_id or 0, body_name)
+        if alert_key in self._announced_high_bio_bodies:
+            return False
+
+        eval_res = evaluate_high_value_bio(
+            bio_predictions,
+            bio_signals=bio_signals,
+            threshold=cfg.get("threshold", 40_000_000),
+            threshold_type=cfg.get("threshold_type", "bonus")
+        )
+
+        if eval_res.get("is_high_value"):
+            self._announced_high_bio_bodies.add(alert_key)
+            formatted_payout = f"{(eval_res.get('total_estimated_bonus', 0) / 1_000_000):.1f}M"
+
+            sys_name = self.current_star_system or ""
+            if not sys_name and sys_addr:
+                self.cursor.execute("SELECT star_system FROM systems WHERE system_address = ?", (sys_addr,))
+                row = self.cursor.fetchone()
+                if row and row["star_system"]:
+                    sys_name = row["star_system"]
+
+            signals_count = bio_signals if bio_signals is not None else len(bio_predictions)
+
+            lang = get_app_language()
+            default_ja_tpls = (
+                "{body}、高額生物反応です。見込額{value}クレジット。",
+                "{body}、生体シグナル{bio_count}件。推定額{value}クレジットです。",
+            )
+            default_en_tpl = "{body}, {bio_count} biological signals detected. Estimated value {value} credits."
+
+            configured_msg = cfg.get("text")
+            if lang == "en":
+                if not configured_msg or configured_msg in default_ja_tpls:
+                    msg = default_en_tpl
+                else:
+                    msg = configured_msg
+            else:
+                if configured_msg == default_en_tpl:
+                    msg = default_ja_tpls[0]
+                else:
+                    msg = configured_msg or default_ja_tpls[0]
+
+            if "{body}" in msg and not body_name:
+                return False
+
+            msg = msg.replace("{body}", body_name)
+            msg = msg.replace("{value}", formatted_payout)
+            msg = msg.replace("{payout}", formatted_payout)
+            msg = msg.replace("{bio_count}", str(signals_count))
+            msg = msg.replace("{signals}", str(signals_count))
+            msg = msg.replace("{bio}", str(signals_count))
+            msg = msg.replace("{system}", sys_name)
+
+            tts_service.enqueue_speak(msg, priority=False)
+            return True
+
+        return False
+
+    def _check_and_trigger_ggg_alert(
+        self,
+        sys_addr: int | None,
+        body_name: str | None,
+        is_confirmed: bool,
+        variant_name: str | None = None,
+    ) -> bool:
+        """
+        Triggers GGG TTS alert via backend TTSService if enabled,
+        strictly enforcing the {body} placeholder condition and deduplicating announcements.
+        Confirmed (Codex-verified) sightings only -- candidate GGG detections
+        are never voiced.
+        """
+        if not self.is_live:
+            return False
+
+        if not is_ggg_tts_enabled():
+            return False
+
+        cfg = get_ggg_tts_config()
+        mode = cfg.get("mode", "both")
+        if mode not in ("both", "tts"):
+            return False
+
+        if cfg.get("engine") == "webspeech":
+            return False
+
+        # Alert key for deduplication
+        alert_key = (sys_addr or 0, body_name or "")
+
+        if is_confirmed:
+            if not cfg.get("confirmed_enabled", True):
+                return False
+
+            if alert_key in self._announced_ggg_confirmed:
+                return False
+
+            lang = get_app_language()
+            default_ja_tpl = "{body}はグリーンガスジャイアント、目視確認を推奨。種別は、{variant}です。"
+            default_en_tpl = "{body} is a Green Gas Giant, visual confirmation recommended. Type is {variant}."
+
+            configured_tpl = cfg.get("confirmed_text")
+            if lang == "en":
+                if not configured_tpl or configured_tpl == default_ja_tpl:
+                    raw_tpl = default_en_tpl
+                else:
+                    raw_tpl = configured_tpl
+            else:
+                if configured_tpl == default_en_tpl:
+                    raw_tpl = default_ja_tpl
+                else:
+                    raw_tpl = configured_tpl or default_ja_tpl
+
+            # Strict {body} condition: if {body} is required by template, body_name must be present
+            if "{body}" in raw_tpl and not body_name:
+                return False
+
+            tts_variant = resolve_ggg_variant_name_by_lang(variant_name, lang=lang)
+
+            tts_msg = raw_tpl
+            if body_name:
+                tts_msg = tts_msg.replace("{body}", body_name)
+            tts_msg = tts_msg.replace("{variant}", tts_variant)
+
+            if "{system}" in tts_msg:
+                sys_name = self.current_star_system or ""
+                if not sys_name and sys_addr:
+                    self.cursor.execute("SELECT star_system FROM systems WHERE system_address = ?", (sys_addr,))
+                    row = self.cursor.fetchone()
+                    if row and row["star_system"]:
+                        sys_name = row["star_system"]
+                tts_msg = tts_msg.replace("{system}", sys_name)
+
+            self._announced_ggg_confirmed.add(alert_key)
+            tts_service.enqueue_speak(tts_msg, priority=True)
+            return True
+
+        return False
+
+    def flush_dirty_systems(self):
+        """Update system-level stats for all modified systems during parsing."""
+        if not self.dirty_systems:
+            return
+        for sys_addr in self.dirty_systems:
+            self._update_system_stats(sys_addr)
+        self.dirty_systems.clear()
+        self.conn.commit()
+        invalidate_celestial_stats_cache()
+
+    def process_journal_line(self, line: str):
+        if not line or not line.strip():
+            return
+        try:
+            event_data = json.loads(line.strip())
+        except Exception:
+            return
+
+        event = event_data.get("event")
+        timestamp = event_data.get("timestamp", "")
+
+        # Update context if present
+        if event_data.get("SystemAddress"):
+            self.current_system_address = event_data["SystemAddress"]
+        if event_data.get("StarSystem"):
+            self.current_star_system = event_data["StarSystem"]
+        if "BodyID" in event_data:
+            self.current_body_id = event_data["BodyID"]
+        if event_data.get("BodyName"):
+            self.current_body_name = event_data["BodyName"]
+        elif event_data.get("Body") and isinstance(event_data.get("Body"), str):
+            self.current_body_name = event_data["Body"]
+
+        if "Latitude" in event_data and "Longitude" in event_data:
+            self.current_latitude = event_data["Latitude"]
+            self.current_longitude = event_data["Longitude"]
+            if getattr(self, "_has_unlocated_mining", False) and self.current_system_address and self.current_body_id is not None:
+                self.cursor.execute("""
+                    UPDATE surface_mining_activities
+                    SET latitude = ?, longitude = ?
+                    WHERE system_address = ? AND body_id = ? AND latitude IS NULL
+                """, (self.current_latitude, self.current_longitude, self.current_system_address, self.current_body_id))
+                self._has_unlocated_mining = False
+        elif "Latitude" in event_data:
+            self.current_latitude = event_data["Latitude"]
+        elif "Longitude" in event_data:
+            self.current_longitude = event_data["Longitude"]
+
+        if event == "StartJump":
+            if self.event_callback:
+                self.event_callback("StartJump", event_data)
+        elif event in ["FSDJump", "Location", "CarrierJump"]:
+            self._handle_jump_or_location(event_data, timestamp)
+            if self.event_callback:
+                self.event_callback(event, event_data)
+        elif event == "FSSDiscoveryScan":
+            self._handle_fss_discovery_scan(event_data)
+            if self.event_callback:
+                self.event_callback("FSSDiscoveryScan", event_data)
+        elif event == "Scan":
+            self._handle_scan(event_data, timestamp)
+            self._update_last_targeted_body(event_data.get("SystemAddress"), event_data.get("BodyID"), event_data.get("BodyName"))
+            if self.event_callback:
+                self.event_callback("Scan", event_data)
+        elif event in ["FSSBodySignals", "SAASignalsFound"]:
+            self._handle_signals(event_data)
+            self._update_last_targeted_body(event_data.get("SystemAddress"), event_data.get("BodyID"), event_data.get("BodyName"))
+            if self.event_callback:
+                self.event_callback(event, event_data)
+        elif event == "SAAScanComplete":
+            self._handle_saa_scan_complete(event_data)
+            self._update_last_targeted_body(event_data.get("SystemAddress"), event_data.get("BodyID"), event_data.get("BodyName"))
+            if self.event_callback:
+                self.event_callback("SAAScanComplete", event_data)
+        elif event == "ScanOrganic":
+            self._handle_scan_organic(event_data, timestamp)
+            self._update_last_targeted_body(event_data.get("SystemAddress"), event_data.get("Body") or event_data.get("BodyID"))
+            if self.event_callback:
+                self.event_callback("ScanOrganic", event_data)
+        elif event == "CodexEntry":
+            self._handle_codex_entry(event_data, timestamp)
+            if self.event_callback:
+                self.event_callback("CodexEntry", event_data)
+        elif event in ["ApproachBody", "Touchdown"]:
+            self._update_last_targeted_body(event_data.get("SystemAddress"), event_data.get("BodyID"), event_data.get("Body"))
+        elif event == "LaunchSRV":
+            self.in_srv = True
+            self.srv_type = event_data.get("SRVType") or "srv"
+            if self.event_callback:
+                self.event_callback("LaunchSRV", event_data)
+        elif event == "DockSRV":
+            self.in_srv = False
+            self.srv_type = None
+            if self.event_callback:
+                self.event_callback("DockSRV", event_data)
+        elif event == "MaterialCollected":
+            self._handle_material_collected(event_data, timestamp)
+            if self.event_callback:
+                self.event_callback("MaterialCollected", event_data)
+        elif event == "MiningRefined":
+            self._handle_mining_refined(event_data, timestamp)
+            if self.event_callback:
+                self.event_callback("MiningRefined", event_data)
+        elif event in ["Docked", "ApproachSettlement"]:
+            self._handle_station_event(event_data, timestamp)
+            if self.event_callback:
+                self.event_callback(event, event_data)
+
+    def _update_last_targeted_body(self, sys_addr: int, body_id=None, body_name=None):
+        if not sys_addr:
+            return
+        if body_id is None and body_name:
+            self.cursor.execute("SELECT body_id FROM bodies WHERE system_address = ? AND body_name = ?", (sys_addr, body_name))
+            row = self.cursor.fetchone()
+            if row:
+                body_id = row["body_id"]
+
+        if body_id is not None:
+            self.cursor.execute("UPDATE systems SET last_targeted_body_id = ? WHERE system_address = ?", (body_id, sys_addr))
+            self.dirty_systems.add(sys_addr)
+
+    def _handle_jump_or_location(self, data: dict, timestamp: str):
+        sys_addr = data.get("SystemAddress")
+        star_sys = data.get("StarSystem")
+        if not sys_addr or not star_sys:
+            return
+
+        if data.get("event") in ["FSDJump", "CarrierJump"]:
+            self.current_latitude = None
+            self.current_longitude = None
+            self.in_srv = False
+            self.srv_type = None
+            self.current_body_id = None
+            self.current_body_name = None
+
+        star_pos = data.get("StarPos", [0, 0, 0])
+        pos_x, pos_y, pos_z = (star_pos[0], star_pos[1], star_pos[2]) if len(star_pos) >= 3 else (0, 0, 0)
+        self.current_star_pos = (pos_x, pos_y, pos_z)
+        sol_dist = round((pos_x**2 + pos_y**2 + pos_z**2)**0.5, 1) if (pos_x is not None and pos_y is not None and pos_z is not None) else 0
+
+        star_class = data.get("StarClass") or data.get("StarType")
+        allegiance = data.get("SystemAllegiance")
+        economy = data.get("SystemEconomy_Localised") or data.get("SystemEconomy")
+        if economy and economy.startswith("$economy_"):
+            economy = economy.replace("$economy_", "").rstrip(";").capitalize()
+        govt = data.get("SystemGovernment_Localised") or data.get("SystemGovernment")
+        sec = data.get("SystemSecurity_Localised") or data.get("SystemSecurity")
+        pop = data.get("Population", 0)
+
+        # SystemFaction & State
+        sys_faction_obj = data.get("SystemFaction")
+        controlling_faction = None
+        system_state = None
+        if isinstance(sys_faction_obj, dict):
+            controlling_faction = sys_faction_obj.get("Name")
+            system_state = sys_faction_obj.get("FactionState")
+        elif isinstance(sys_faction_obj, str):
+            controlling_faction = sys_faction_obj
+            system_state = data.get("FactionState")
+        if not system_state:
+            system_state = data.get("FactionState")
+
+        sec_economy = data.get("SystemSecondEconomy_Localised") or data.get("SystemSecondEconomy")
+        if sec_economy and sec_economy.startswith("$economy_"):
+            sec_economy = sec_economy.replace("$economy_", "").rstrip(";").capitalize()
+
+        reserve_lvl = data.get("SystemReserve_Localised") or data.get("SystemReserve")
+        if reserve_lvl and reserve_lvl.startswith("$reserve_"):
+            reserve_lvl = reserve_lvl.replace("$reserve_", "").rstrip(";").capitalize()
+
+        # Check existing system
+        self.cursor.execute("SELECT first_visited, visit_count FROM systems WHERE system_address = ?", (sys_addr,))
+        row = self.cursor.fetchone()
+
+        if row:
+            first_visited = row["first_visited"] or timestamp
+            visit_count = (row["visit_count"] or 1) + (1 if data.get("event") == "FSDJump" else 0)
+            self.cursor.execute("""
+                UPDATE systems SET
+                    star_system = COALESCE(?, star_system),
+                    star_pos_x = COALESCE(?, star_pos_x),
+                    star_pos_y = COALESCE(?, star_pos_y),
+                    star_pos_z = COALESCE(?, star_pos_z),
+                    sol_distance_ly = CASE WHEN ? > 0 THEN ? ELSE sol_distance_ly END,
+                    main_star_type = COALESCE(?, main_star_type),
+                    population = CASE WHEN ? > 0 THEN ? ELSE population END,
+                    system_allegiance = COALESCE(?, system_allegiance),
+                    system_economy = COALESCE(?, system_economy),
+                    system_second_economy = COALESCE(?, system_second_economy),
+                    system_government = COALESCE(?, system_government),
+                    system_security = COALESCE(?, system_security),
+                    system_state = COALESCE(NULLIF(?, ''), system_state),
+                    controlling_faction = COALESCE(NULLIF(?, ''), controlling_faction),
+                    system_reserve = COALESCE(NULLIF(?, ''), system_reserve),
+                    first_visited = COALESCE(first_visited, ?),
+                    last_visited = ?,
+                    visit_count = visit_count + 1,
+                    is_external = 0
+                WHERE system_address = ?
+            """, (
+                star_sys, pos_x, pos_y, pos_z, sol_dist, sol_dist, star_class,
+                pop, pop, allegiance, economy, sec_economy, govt, sec,
+                system_state, controlling_faction, reserve_lvl,
+                timestamp, timestamp, sys_addr
+            ))
+        else:
+            self.cursor.execute("""
+                INSERT INTO systems (
+                    system_address, star_system, star_pos_x, star_pos_y, star_pos_z, sol_distance_ly,
+                    main_star_type, system_allegiance, system_economy, system_second_economy,
+                    system_government, system_security, system_state, controlling_faction, system_reserve,
+                    population, first_visited, last_visited, visit_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                sys_addr, star_sys, pos_x, pos_y, pos_z, sol_dist,
+                star_class, allegiance, economy, sec_economy,
+                govt, sec, system_state or "", controlling_faction or "", reserve_lvl or "",
+                pop, timestamp, timestamp, 1
+            ))
+
+        # Record visit timeline if FSDJump
+        if data.get("event") == "FSDJump":
+            jump_dist = data.get("JumpDist", 0)
+            fuel = data.get("FuelUsed", 0)
+            taxi = 1 if data.get("Taxi", False) else 0
+            self.cursor.execute("""
+                INSERT INTO visits (system_address, star_system, timestamp, star_pos_x, star_pos_y, star_pos_z, jump_dist, fuel_used, is_taxi)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (sys_addr, star_sys, timestamp, pos_x, pos_y, pos_z, jump_dist, fuel, taxi))
+
+        # Record station if present in Location / FSDJump
+        if data.get("StationName"):
+            self._handle_station_event(data, timestamp)
+
+        # Queue background EDSM discovery verification
+        if sys_addr and star_sys:
+            try:
+                if self.is_live:
+                    edsm_service.queue_system_check(sys_addr, star_sys, priority=True)
+            except Exception:
+                pass
+
+    def _handle_station_event(self, data: dict, timestamp: str):
+        st_name = data.get("StationName") or data.get("Name")
+        sys_addr = data.get("SystemAddress") or self.current_system_address
+        if not st_name or not sys_addr:
+            return
+
+        market_id = data.get("MarketID")
+        st_type = data.get("StationType")
+        body_name = data.get("Body") or data.get("BodyName")
+        body_id = data.get("BodyID")
+        dist_ls = data.get("DistFromStarLS")
+        lat = data.get("Latitude")
+        lon = data.get("Longitude")
+        is_planetary = 1 if (lat is not None and lon is not None) or (st_type and "Planetary" in st_type) else 0
+
+        # Faction & Economy
+        st_faction = data.get("StationFaction")
+        faction_name = st_faction.get("Name") if isinstance(st_faction, dict) else st_faction
+        st_econ = data.get("StationEconomy_Localised") or data.get("StationEconomy")
+        st_govt = data.get("StationGovernment_Localised") or data.get("StationGovernment")
+        allegiance = data.get("StationAllegiance")
+
+        # Large pad check
+        large_pad_types = [
+            "starport", "coriolis", "orbis", "ocellus", "asteroid", "megaship",
+            "mega ship", "fleetcarrier", "fleet carrier", "planetary port"
+        ]
+        st_type_lower = (st_type or "").lower()
+        pads = data.get("LandingPads")
+        has_large_pad = 0
+        if isinstance(pads, dict) and pads.get("Large", 0) > 0:
+            has_large_pad = 1
+        elif any(t in st_type_lower for t in large_pad_types):
+            has_large_pad = 1
+
+        try:
+            self.cursor.execute("""
+                INSERT INTO stations (
+                    system_address, market_id, station_name, station_type, body_name, body_id,
+                    latitude, longitude, distance_to_arrival_ls, allegiance, economy, government,
+                    controlling_faction, is_planetary, has_large_pad, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(system_address, station_name) DO UPDATE SET
+                    market_id = COALESCE(excluded.market_id, stations.market_id),
+                    station_type = COALESCE(excluded.station_type, stations.station_type),
+                    body_name = COALESCE(excluded.body_name, stations.body_name),
+                    body_id = COALESCE(excluded.body_id, stations.body_id),
+                    latitude = COALESCE(excluded.latitude, stations.latitude),
+                    longitude = COALESCE(excluded.longitude, stations.longitude),
+                    distance_to_arrival_ls = COALESCE(excluded.distance_to_arrival_ls, stations.distance_to_arrival_ls),
+                    allegiance = COALESCE(excluded.allegiance, stations.allegiance),
+                    economy = COALESCE(excluded.economy, stations.economy),
+                    government = COALESCE(excluded.government, stations.government),
+                    controlling_faction = COALESCE(excluded.controlling_faction, stations.controlling_faction),
+                    is_planetary = CASE WHEN excluded.is_planetary = 1 THEN 1 ELSE stations.is_planetary END,
+                    has_large_pad = CASE WHEN excluded.has_large_pad = 1 THEN 1 ELSE stations.has_large_pad END,
+                    updated_at = excluded.updated_at
+            """, (
+                sys_addr, market_id, st_name, st_type, body_name, body_id,
+                lat, lon, dist_ls, allegiance, st_econ, st_govt,
+                faction_name, is_planetary, has_large_pad, timestamp
+            ))
+        except Exception:
+            pass
+
+    def _handle_fss_discovery_scan(self, data: dict):
+        sys_addr = data.get("SystemAddress")
+        body_count = data.get("BodyCount", 0)
+        star_sys = data.get("SystemName") or self.current_star_system
+        if sys_addr:
+            self.cursor.execute("""
+                UPDATE systems SET total_bodies = MAX(total_bodies, ?) WHERE system_address = ?
+            """, (body_count, sys_addr))
+            if star_sys:
+                try:
+                    if self.is_live:
+                        edsm_service.queue_system_check(sys_addr, star_sys, priority=True)
+                except Exception:
+                    pass
+
+    def _handle_scan(self, data: dict, timestamp: str):
+        sys_addr = data.get("SystemAddress")
+        body_id = data.get("BodyID")
+        body_name = data.get("BodyName")
+        star_sys = data.get("StarSystem")
+
+        if sys_addr is None or body_id is None or not body_name:
+            return
+
+        # Skip Barycentres, Belt Clusters, and Rings that are not actual stars or planets
+        scan_type = data.get("ScanType", "")
+        if scan_type == "Barycentre" or "barycentre" in body_name.lower():
+            return
+        if "belt cluster" in body_name.lower() or " ring" in body_name.lower():
+            return
+
+        star_type = data.get("StarType")
+        luminosity = data.get("Luminosity")
+        subclass = data.get("Subclass")
+        stellar_mass = data.get("StellarMass")
+        planet_class = data.get("PlanetClass")
+        if not star_type and not planet_class:
+            return
+        dist_ls = data.get("DistanceFromArrivalLS", 0.0)
+        radius = data.get("Radius")
+        surface_temp = data.get("SurfaceTemperature")
+        mass_em = data.get("MassEM")
+
+        gravity_raw = data.get("SurfaceGravity")
+        # SurfaceGravity in journal is m/s^2. G value = gravity / 9.80665
+        gravity_g = round(gravity_raw / 9.80665, 4) if gravity_raw is not None else None
+
+        surface_pressure = data.get("SurfacePressure")
+        landable = 1 if data.get("Landable", False) else 0
+        volcanism = data.get("Volcanism", "")
+        terraforming = data.get("TerraformState", "")
+        tidal_lock = 1 if data.get("TidalLock", False) else 0
+
+        semi_major_axis = data.get("SemiMajorAxis")
+        eccentricity = data.get("Eccentricity")
+        inclination = data.get("OrbitalInclination")
+        periapsis = data.get("Periapsis")
+        orbital_period = data.get("OrbitalPeriod")
+        ascending_node = data.get("AscendingNode")
+        mean_anomaly = data.get("MeanAnomaly")
+        rotation_period = data.get("RotationPeriod")
+        axial_tilt = data.get("AxialTilt")
+
+        atmosphere = data.get("Atmosphere", "")
+        atmosphere_type = data.get("AtmosphereType", "")
+        atmosphere_comp = json.dumps(data.get("AtmosphereComposition", [])) if data.get("AtmosphereComposition") else None
+        rings = json.dumps(data.get("Rings", [])) if data.get("Rings") else None
+        materials = json.dumps(data.get("Materials", [])) if data.get("Materials") else None
+        parents = json.dumps(data.get("Parents", [])) if data.get("Parents") else None
+
+        scan_type = data.get("ScanType", "")
+        was_discovered = 1 if data.get("WasDiscovered", False) else 0
+        was_mapped = 1 if data.get("WasMapped", False) else 0
+
+        # Check if system is known to be populated
+        is_populated = False
+        self.cursor.execute("SELECT population FROM systems WHERE system_address = ?", (sys_addr,))
+        pop_row = self.cursor.fetchone()
+        if pop_row and pop_row["population"] and pop_row["population"] > 0:
+            is_populated = True
+
+        # NavBeacon scans, already mapped bodies, or populated systems cannot be first discoveries
+        if scan_type in ["NavBeacon", "NavBeaconDetail"] or was_mapped == 1 or is_populated:
+            was_discovered = 1
+
+        reserve_level = data.get("ReserveLevel")
+
+        # Calculate values
+        body_dict = {
+            "system_address": sys_addr,
+            "body_id": body_id,
+            "body_name": body_name,
+            "star_system": star_sys,
+            "distance_from_arrival_ls": dist_ls,
+            "semi_major_axis": semi_major_axis,
+            "parents": parents,
+            "star_type": star_type,
+            "luminosity": luminosity,
+            "stellar_mass": stellar_mass,
+            "planet_class": planet_class,
+            "mass_em": mass_em,
+            "terraforming_state": terraforming,
+            "landable": landable,
+            "surface_temperature": surface_temp,
+            "surface_gravity": gravity_raw,
+            "surface_gravity_g": gravity_g,
+            "surface_pressure": surface_pressure,
+            "atmosphere": atmosphere,
+            "atmosphere_type": atmosphere_type,
+            "atmosphere_composition": atmosphere_comp,
+            "materials": materials,
+            "volcanism": volcanism,
+            "eccentricity": eccentricity,
+            "orbital_period": orbital_period,
+            "rotation_period": rotation_period,
+            "orbital_inclination": inclination,
+            "rings": rings,
+            "reserve_level": reserve_level,
+            "radius": radius,
+            "axial_tilt": axial_tilt,
+            "Age_MY": data.get("Age_MY"),
+            "bio_signals": 0
+        }
+
+        # Check if already had bio_signals / geo_signals / mining_signals / confirmed_genuses in existing body record
+        self.cursor.execute("SELECT bio_signals, geo_signals, mining_signals, is_mapped_by_user, confirmed_genuses, anomalies_json FROM bodies WHERE system_address = ? AND body_id = ?", (sys_addr, body_id))
+        existing_b = self.cursor.fetchone()
+        existing_bio = existing_b["bio_signals"] if (existing_b and existing_b["bio_signals"] is not None) else None
+        existing_geo = existing_b["geo_signals"] if existing_b else 0
+        existing_mining = existing_b["mining_signals"] if (existing_b and "mining_signals" in existing_b.keys()) else 0
+        existing_mapped = existing_b["is_mapped_by_user"] if existing_b else (1 if was_mapped == 1 else 0)
+        existing_genuses = existing_b["confirmed_genuses"] if existing_b else None
+        existing_anomalies_raw = existing_b["anomalies_json"] if (existing_b and "anomalies_json" in existing_b.keys()) else None
+        body_dict["bio_signals"] = existing_bio if existing_bio is not None else (data.get("BioSignals") or data.get("bio_signals") or 0)
+        body_dict["is_mapped_by_user"] = existing_mapped
+        body_dict["was_mapped"] = was_mapped
+        body_dict["mining_signals"] = existing_mining
+        if existing_genuses:
+            body_dict["confirmed_genuses"] = existing_genuses
+
+        # Resolve parent star type for planets if star_type is absent
+        parent_star_type = None
+        if star_type:
+            parent_star_type = star_type
+        else:
+            if parents:
+                try:
+                    p_list = json.loads(parents) if isinstance(parents, str) else parents
+                    for p in p_list:
+                        if isinstance(p, dict) and "Star" in p:
+                            p_star_id = p["Star"]
+                            self.cursor.execute("SELECT star_type FROM bodies WHERE system_address = ? AND body_id = ?", (sys_addr, p_star_id))
+                            p_row = self.cursor.fetchone()
+                            if p_row and p_row["star_type"]:
+                                parent_star_type = p_row["star_type"]
+                                break
+                except Exception:
+                    pass
+            if not parent_star_type and sys_addr:
+                self.cursor.execute("SELECT main_star_type FROM systems WHERE system_address = ?", (sys_addr,))
+                s_row = self.cursor.fetchone()
+                if s_row and s_row["main_star_type"]:
+                    parent_star_type = s_row["main_star_type"]
+        body_dict["parent_star_type"] = parent_star_type
+
+        # Resolve system star coordinates for regional exobiology resolution
+        system_star_pos = getattr(self, "current_star_pos", None)
+        if sys_addr:
+            self.cursor.execute("SELECT star_pos_x, star_pos_y, star_pos_z FROM systems WHERE system_address = ?", (sys_addr,))
+            pos_row = self.cursor.fetchone()
+            if pos_row and pos_row["star_pos_x"] is not None:
+                system_star_pos = (pos_row["star_pos_x"], pos_row["star_pos_y"], pos_row["star_pos_z"])
+        if system_star_pos:
+            body_dict["star_pos"] = system_star_pos
+
+        values = calculate_body_value(body_dict)
+        fss_val = values.get("fss_value", 0)
+        dss_val = values.get("dss_value", 0)
+        fd_fss = values.get("first_discovered_fss", 0)
+        fm_dss = values.get("first_mapped_dss", 0)
+        max_pot = values.get("max_potential_value", 0)
+
+        # Predict Exobiology candidates and preserve locked/confirmed organics
+        bio_predictions = _compute_exobiology_predictions(body_dict, self._exobiology_system_context(sys_addr))
+        self._lock_confirmed_organics_into_predictions(sys_addr, body_id, bio_predictions)
+        bio_pred_json = json.dumps(bio_predictions)
+        if self.is_live and body_dict.get("bio_signals"):
+            self._check_and_trigger_high_bio_alert(
+                sys_addr, body_id, body_dict.get("body_name", ""),
+                bio_predictions, bio_signals=body_dict.get("bio_signals")
+            )
+
+        # Check if this body has a confirmed GGG in codex_entries table or existing record
+        b_name = body_dict.get("body_name") or body_dict.get("BodyName")
+        planet_class_str = (body_dict.get("planet_class") or body_dict.get("PlanetClass") or "")
+        is_star_body = bool(body_dict.get("star_type") or body_dict.get("StarType"))
+
+        is_confirmed_ggg = False
+        confirmed_ggg_variant = None
+
+        if not is_star_body:
+            self.cursor.execute(
+                "SELECT id, ggg_variant, body_id, body_name FROM codex_entries WHERE system_address = ? AND (body_id = ? OR (body_name IS NOT NULL AND body_name = ?)) AND is_ggg = 1 LIMIT 1",
+                (sys_addr, body_id, b_name)
+            )
+            codex_ggg = self.cursor.fetchone()
+
+            # If no direct match by body_id/name, check if system has a GGG codex entry matching this gas giant class
+            if not codex_ggg and planet_class_str:
+                self.cursor.execute(
+                    "SELECT id, ggg_variant, body_id, body_name FROM codex_entries WHERE system_address = ? AND is_ggg = 1",
+                    (sys_addr,)
+                )
+                for entry in self.cursor.fetchall():
+                    if is_matching_ggg_planet_class(entry["ggg_variant"], planet_class_str):
+                        codex_ggg = entry
+                        # Fix misattributed codex entry (was on star body_id=0 or None)
+                        self.cursor.execute(
+                            "UPDATE codex_entries SET body_id = ?, body_name = ? WHERE id = ?",
+                            (body_id, b_name, entry["id"])
+                        )
+                        # Clean false GGG from star if present
+                        self.cursor.execute("SELECT id, anomalies_json FROM bodies WHERE system_address = ? AND star_type IS NOT NULL", (sys_addr,))
+                        for s_row in self.cursor.fetchall():
+                            if s_row["anomalies_json"] and "Confirmed GGG" in s_row["anomalies_json"]:
+                                try:
+                                    s_anoms = [a for a in json.loads(s_row["anomalies_json"]) if not ((isinstance(a, dict) and (a.get("type") == "confirmed_ggg" or "Confirmed GGG" in a.get("tag", ""))) or (isinstance(a, str) and "Confirmed GGG" in a))]
+                                    self.cursor.execute("UPDATE bodies SET anomalies_json = ? WHERE id = ?", (json.dumps(s_anoms), s_row["id"]))
+                                except Exception:
+                                    pass
+                        break
+
+            if codex_ggg:
+                is_confirmed_ggg = True
+                confirmed_ggg_variant = codex_ggg["ggg_variant"]
+                if body_id is not None and b_name:
+                    self.cursor.execute(
+                        "UPDATE codex_entries SET body_id = ?, body_name = ? WHERE id = ?",
+                        (body_id, b_name, codex_ggg["id"])
+                    )
+
+        if not is_confirmed_ggg and existing_anomalies_raw:
+            try:
+                ex_anom = json.loads(existing_anomalies_raw)
+                for a in ex_anom:
+                    t = a.get("tag") if isinstance(a, dict) else str(a)
+                    if t and "Confirmed GGG" in t:
+                        is_confirmed_ggg = True
+                        if "(" in t and ")" in t:
+                            confirmed_ggg_variant = t.split("(")[1].split(")")[0]
+                        break
+            except Exception:
+                pass
+
+        # Detect Celestial Rarity & Anomalies
+        rarity_res = _compute_rarity(
+            body_dict,
+            star_system_age=body_dict.get("Age_MY"),
+            main_star_type=parent_star_type,
+            is_confirmed_ggg=is_confirmed_ggg,
+            confirmed_ggg_variant=confirmed_ggg_variant
+        )
+        ggg = rarity_res.get("ggg_evaluation") or {}
+        # Candidate (unconfirmed) GGG detections never trigger a TTS alert --
+        # only Codex-confirmed sightings are voiced. ggg["is_candidate"] is
+        # still used below to tag the body for the visual "GGG Candidate"
+        # badge/filter, which is unaffected by this.
+        if is_confirmed_ggg:
+            self._check_and_trigger_ggg_alert(
+                sys_addr=sys_addr,
+                body_name=b_name,
+                is_confirmed=True,
+                variant_name=confirmed_ggg_variant
+            )
+
+        anomalies = detect_anomalies(body_dict)
+        rarity_tags = rarity_res.get("tags") or []
+        for r_tag in rarity_tags:
+            # GGG Candidate is never surfaced as a badge/anomaly entry
+            # (unlike Confirmed GGG) -- it still contributes to the overall
+            # numeric rarity score above, just not as its own tag.
+            if "GGG Candidate" in r_tag:
+                continue
+            if not any((a.get("tag") == r_tag if isinstance(a, dict) else a == r_tag) for a in anomalies):
+                is_conf_ggg = "Confirmed GGG" in r_tag
+                if is_conf_ggg:
+                    color = "green"
+                    a_type = "confirmed_ggg"
+                    desc = f"確定GGG: {confirmed_ggg_variant or 'Codex'}"
+                else:
+                    color = "orange"
+                    a_type = "rarity"
+                    desc = r_tag
+
+                anomalies.append({
+                    "type": a_type,
+                    "tag": r_tag,
+                    "color": color,
+                    "desc": desc,
+                    "desc_en": r_tag
+                })
+
+        # Preserve any pre-existing anomalies attached to this body (but
+        # never re-surface an old GGG Candidate tag from before it was
+        # dropped from display).
+        if existing_anomalies_raw:
+            try:
+                ex_items = json.loads(existing_anomalies_raw)
+                for ex_item in ex_items:
+                    ex_tag = ex_item.get("tag") if isinstance(ex_item, dict) else str(ex_item)
+                    ex_type = ex_item.get("type") if isinstance(ex_item, dict) else None
+                    if ex_type == "ggg_candidate" or (ex_tag and "GGG Candidate" in ex_tag):
+                        continue
+                    if ex_tag and not any((a.get("tag") == ex_tag if isinstance(a, dict) else a == ex_tag) for a in anomalies):
+                        anomalies.append(ex_item)
+            except Exception:
+                pass
+
+        anomalies_json = json.dumps(anomalies)
+
+        self.cursor.execute("""
+            INSERT INTO bodies (
+                system_address, body_id, body_name, star_system, distance_from_arrival_ls,
+                star_type, luminosity, subclass, age_my, stellar_mass, absolute_magnitude, radius, surface_temperature,
+                planet_class, atmosphere, atmosphere_type, atmosphere_composition,
+                mass_em, surface_gravity, surface_gravity_g, surface_pressure, landable,
+                volcanism, terraforming_state, tidal_lock, semi_major_axis, eccentricity,
+                orbital_inclination, periapsis, orbital_period, ascending_node, mean_anomaly,
+                rotation_period, axial_tilt, rings, materials, parents, was_discovered, was_mapped,
+                is_mapped_by_user, bio_signals, geo_signals, mining_signals, reserve_level, fss_value, dss_value,
+                first_discovered_fss, first_mapped_dss, max_potential_value,
+                confirmed_genuses, exobiology_predictions, anomalies_json, scan_type, scan_timestamp, updated_timestamp
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
+            ON CONFLICT(system_address, body_id) DO UPDATE SET
+                body_name = excluded.body_name,
+                star_system = COALESCE(excluded.star_system, bodies.star_system),
+                distance_from_arrival_ls = excluded.distance_from_arrival_ls,
+                star_type = COALESCE(excluded.star_type, bodies.star_type),
+                luminosity = COALESCE(excluded.luminosity, bodies.luminosity),
+                subclass = COALESCE(excluded.subclass, bodies.subclass),
+                age_my = COALESCE(excluded.age_my, bodies.age_my),
+                stellar_mass = COALESCE(excluded.stellar_mass, bodies.stellar_mass),
+                radius = COALESCE(excluded.radius, bodies.radius),
+                surface_temperature = COALESCE(excluded.surface_temperature, bodies.surface_temperature),
+                planet_class = COALESCE(excluded.planet_class, bodies.planet_class),
+                atmosphere = COALESCE(excluded.atmosphere, bodies.atmosphere),
+                atmosphere_type = COALESCE(excluded.atmosphere_type, bodies.atmosphere_type),
+                atmosphere_composition = COALESCE(excluded.atmosphere_composition, bodies.atmosphere_composition),
+                mass_em = COALESCE(excluded.mass_em, bodies.mass_em),
+                surface_gravity = COALESCE(excluded.surface_gravity, bodies.surface_gravity),
+                surface_gravity_g = COALESCE(excluded.surface_gravity_g, bodies.surface_gravity_g),
+                surface_pressure = COALESCE(excluded.surface_pressure, bodies.surface_pressure),
+                landable = excluded.landable,
+                volcanism = COALESCE(excluded.volcanism, bodies.volcanism),
+                terraforming_state = COALESCE(excluded.terraforming_state, bodies.terraforming_state),
+                tidal_lock = excluded.tidal_lock,
+                semi_major_axis = COALESCE(excluded.semi_major_axis, bodies.semi_major_axis),
+                eccentricity = COALESCE(excluded.eccentricity, bodies.eccentricity),
+                orbital_inclination = COALESCE(excluded.orbital_inclination, bodies.orbital_inclination),
+                orbital_period = COALESCE(excluded.orbital_period, bodies.orbital_period),
+                rotation_period = COALESCE(excluded.rotation_period, bodies.rotation_period),
+                rings = COALESCE(excluded.rings, bodies.rings),
+                materials = COALESCE(excluded.materials, bodies.materials),
+                parents = COALESCE(excluded.parents, bodies.parents),
+                was_discovered = CASE WHEN bodies.was_discovered = 1 OR excluded.was_discovered = 1 THEN 1 ELSE 0 END,
+                was_mapped = CASE WHEN bodies.was_mapped = 1 OR excluded.was_mapped = 1 THEN 1 ELSE 0 END,
+                scan_type = COALESCE(excluded.scan_type, bodies.scan_type),
+                reserve_level = COALESCE(excluded.reserve_level, bodies.reserve_level),
+                fss_value = excluded.fss_value,
+                dss_value = excluded.dss_value,
+                first_discovered_fss = excluded.first_discovered_fss,
+                first_mapped_dss = excluded.first_mapped_dss,
+                max_potential_value = excluded.max_potential_value,
+                exobiology_predictions = excluded.exobiology_predictions,
+                anomalies_json = excluded.anomalies_json,
+                updated_timestamp = excluded.updated_timestamp
+        """, (
+            sys_addr, body_id, body_name, star_sys, dist_ls,
+            star_type, luminosity, subclass, data.get("Age_MY"), stellar_mass, data.get("AbsoluteMagnitude"), radius, surface_temp,
+            planet_class, atmosphere, atmosphere_type, atmosphere_comp,
+            mass_em, gravity_raw, gravity_g, surface_pressure, landable,
+            volcanism, terraforming, tidal_lock, semi_major_axis, eccentricity,
+            inclination, periapsis, orbital_period, ascending_node, mean_anomaly,
+            rotation_period, axial_tilt, rings, materials, parents, was_discovered, was_mapped,
+            existing_mapped, existing_bio, existing_geo, existing_mining, reserve_level, fss_val, dss_val,
+            fd_fss, fm_dss, max_pot,
+            existing_genuses, bio_pred_json, anomalies_json, scan_type, timestamp, timestamp
+        ))
+
+        self.dirty_systems.add(sys_addr)
+
+        # Backfill body_type for any prior mining activity recorded before Scan arrived
+        if planet_class:
+            b_type = self._get_body_type_category(sys_addr, body_id, body_name)
+            self.cursor.execute("""
+                UPDATE surface_mining_activities 
+                SET body_type = ? 
+                WHERE system_address = ? 
+                  AND (body_id = ? OR body_name = ?)
+                  AND (body_type IS NULL OR body_type = 'Unknown')
+            """, (b_type, sys_addr, body_id, body_name))
+
+    def _handle_signals(self, data: dict):
+        sys_addr = data.get("SystemAddress")
+        body_id = data.get("BodyID")
+        body_name = data.get("BodyName")
+        signals = data.get("Signals", [])
+        event_name = data.get("event", "")
+
+        if sys_addr is None:
+            return
+
+        bio_count = 0
+        geo_count = 0
+        mining_count = 0
+        for s in signals:
+            stype = s.get("Type", "")
+            scount = s.get("Count", 0)
+            if "$SAA_SignalType_Biological" in stype or "biological" in stype.lower() or "bio" in stype.lower():
+                bio_count += scount
+            elif "$SAA_SignalType_Geological" in stype or "geological" in stype.lower() or "geo" in stype.lower():
+                geo_count += scount
+            elif "$PlanetaryMiningLocation" in stype or "mining" in stype.lower():
+                mining_count += scount
+
+        # Extract confirmed Genuses from SAASignalsFound if present
+        confirmed_genuses_list = []
+        if "Genuses" in data and isinstance(data["Genuses"], list):
+            for g in data["Genuses"]:
+                g_name = g.get("Genus_Localised") or g.get("Genus") or ""
+                if g_name:
+                    clean_g = re.sub(r"^\$Codex_Ent_|_Genus_Name;?$", "", g_name, flags=re.IGNORECASE).strip()
+                    if clean_g:
+                        confirmed_genuses_list.append(clean_g)
+        
+        confirmed_genuses_json = json.dumps(confirmed_genuses_list) if confirmed_genuses_list else None
+        is_saa_signals = (event_name == "SAASignalsFound")
+
+        # Auto-record ring DSS hotspots into markdown notes
+        if is_saa_signals and signals:
+            hotspot_counts = {}
+            for s in signals:
+                stype = s.get("Type") or ""
+                stype_loc = s.get("Type_Localised") or ""
+                scount = s.get("Count", 1)
+                if "$Hotspot_" in stype or "hotspot" in stype.lower():
+                    min_name = stype_loc or re.sub(r"^\$Hotspot_|_Name;?$", "", stype, flags=re.IGNORECASE).rstrip(";").strip()
+                    if min_name:
+                        hotspot_counts[min_name] = hotspot_counts.get(min_name, 0) + scount
+            
+            if hotspot_counts and (body_id is not None or body_name):
+                try:
+                    from app.live.rhino.note_integrator import update_ring_hotspots_in_db
+                    update_ring_hotspots_in_db(
+                        conn=self.conn,
+                        system_address=sys_addr,
+                        body_id=body_id if body_id is not None else 0,
+                        body_name=body_name or f"Body {body_id}",
+                        star_system=self.current_star_system or "",
+                        ring_name=body_name or "Ring",
+                        hotspot_counts=hotspot_counts
+                    )
+                except Exception as e:
+                    print(f"[Parser] Error recording ring hotspots: {e}")
+
+        # Check if body exists
+        if body_id is not None:
+            self.cursor.execute("SELECT * FROM bodies WHERE system_address = ? AND body_id = ?", (sys_addr, body_id))
+        elif body_name:
+            self.cursor.execute("SELECT * FROM bodies WHERE system_address = ? AND body_name = ?", (sys_addr, body_name))
+        else:
+            return
+
+        existing = self.cursor.fetchone()
+        if existing:
+            b_dict = dict(existing)
+            b_dict["bio_signals"] = bio_count
+            b_dict["geo_signals"] = geo_count
+            b_dict["mining_signals"] = mining_count
+            if is_saa_signals:
+                b_dict["is_mapped_by_user"] = 1
+
+            if confirmed_genuses_list:
+                b_dict["confirmed_genuses"] = confirmed_genuses_list
+            elif existing["confirmed_genuses"]:
+                b_dict["confirmed_genuses"] = existing["confirmed_genuses"]
+
+            system_star_pos = getattr(self, "current_star_pos", None)
+            self.cursor.execute("SELECT main_star_type, star_pos_x, star_pos_y, star_pos_z FROM systems WHERE system_address = ?", (sys_addr,))
+            s_row = self.cursor.fetchone()
+            if s_row:
+                if not b_dict.get("parent_star_type") and not b_dict.get("star_type") and s_row["main_star_type"]:
+                    b_dict["parent_star_type"] = s_row["main_star_type"]
+                if not system_star_pos and s_row["star_pos_x"] is not None:
+                    system_star_pos = (s_row["star_pos_x"], s_row["star_pos_y"], s_row["star_pos_z"])
+            if system_star_pos:
+                b_dict["star_pos"] = system_star_pos
+            
+            if bio_count == 0:
+                bio_predictions = []
+            else:
+                bio_predictions = _compute_exobiology_predictions(b_dict, self._exobiology_system_context(sys_addr))
+                self._lock_confirmed_organics_into_predictions(sys_addr, body_id or existing["body_id"], bio_predictions)
+                self._check_and_trigger_high_bio_alert(
+                    sys_addr, body_id or existing["body_id"], b_dict.get("body_name", ""),
+                    bio_predictions, bio_signals=bio_count
+                )
+            bio_pred_json = json.dumps(bio_predictions)
+            anomalies = detect_anomalies(b_dict)
+            anomalies_json = json.dumps(anomalies)
+
+            mapped_val = 1 if is_saa_signals else existing["is_mapped_by_user"]
+            self.cursor.execute("""
+                UPDATE bodies SET
+                    bio_signals = ?,
+                    geo_signals = ?,
+                    mining_signals = ?,
+                    is_mapped_by_user = ?,
+                    confirmed_genuses = COALESCE(?, confirmed_genuses),
+                    exobiology_predictions = ?,
+                    anomalies_json = ?
+                WHERE id = ?
+            """, (bio_count, geo_count, mining_count, mapped_val, confirmed_genuses_json, bio_pred_json, anomalies_json, existing["id"]))
+        else:
+            # Insert stub body record if Scan hasn't occurred yet
+            b_dict = {
+                "system_address": sys_addr,
+                "body_id": body_id or 0,
+                "body_name": body_name or f"Body {body_id}",
+                "bio_signals": bio_count,
+                "geo_signals": geo_count,
+                "mining_signals": mining_count,
+                "is_mapped_by_user": 1 if is_saa_signals else 0,
+                "confirmed_genuses": confirmed_genuses_list if confirmed_genuses_list else None
+            }
+            system_star_pos = getattr(self, "current_star_pos", None)
+            self.cursor.execute("SELECT main_star_type, star_pos_x, star_pos_y, star_pos_z FROM systems WHERE system_address = ?", (sys_addr,))
+            s_row = self.cursor.fetchone()
+            if s_row:
+                if not b_dict.get("parent_star_type") and not b_dict.get("star_type") and s_row["main_star_type"]:
+                    b_dict["parent_star_type"] = s_row["main_star_type"]
+                if not system_star_pos and s_row["star_pos_x"] is not None:
+                    system_star_pos = (s_row["star_pos_x"], s_row["star_pos_y"], s_row["star_pos_z"])
+            if system_star_pos:
+                b_dict["star_pos"] = system_star_pos
+
+            if bio_count == 0:
+                bio_predictions = []
+            else:
+                bio_predictions = _compute_exobiology_predictions(b_dict, self._exobiology_system_context(sys_addr))
+                self._lock_confirmed_organics_into_predictions(sys_addr, body_id or 0, bio_predictions)
+                self._check_and_trigger_high_bio_alert(
+                    sys_addr, body_id or 0, b_dict.get("body_name", ""),
+                    bio_predictions, bio_signals=bio_count
+                )
+            bio_pred_json = json.dumps(bio_predictions)
+            anomalies = detect_anomalies(b_dict)
+            anomalies_json = json.dumps(anomalies)
+
+            self.cursor.execute("""
+                INSERT INTO bodies (
+                    system_address, body_id, body_name, bio_signals, geo_signals, mining_signals,
+                    is_mapped_by_user, confirmed_genuses, exobiology_predictions, anomalies_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(system_address, body_id) DO UPDATE SET
+                    bio_signals = excluded.bio_signals,
+                    geo_signals = excluded.geo_signals,
+                    mining_signals = excluded.mining_signals,
+                    is_mapped_by_user = CASE WHEN excluded.is_mapped_by_user = 1 THEN 1 ELSE bodies.is_mapped_by_user END,
+                    confirmed_genuses = COALESCE(excluded.confirmed_genuses, bodies.confirmed_genuses),
+                    exobiology_predictions = excluded.exobiology_predictions,
+                    anomalies_json = excluded.anomalies_json
+            """, (sys_addr, body_id or 0, body_name or f"Body {body_id}", bio_count, geo_count, mining_count, 1 if is_saa_signals else 0, confirmed_genuses_json, bio_pred_json, anomalies_json))
+
+        self.dirty_systems.add(sys_addr)
+
+    def recompute_exobiology_predictions(self, progress_callback=None) -> dict:
+        """Recomputes the stored predictions of every landable body with bio signals, so data written by an
+        older species engine is replaced. Scanned organics stay locked in. Does nothing (and reports
+        skipped) while the exobiology prediction addon is off, so stored predictions are never wiped."""
+        if addon_manager.get_provider("exobiology_predict_body") is None:
+            return {"skipped": True, "bodies": 0, "updated": 0}
+
+        self.cursor.execute(
+            "SELECT * FROM bodies WHERE landable = 1 AND bio_signals > 0 ORDER BY system_address, body_id"
+        )
+        rows = [dict(r) for r in self.cursor.fetchall()]
+        contexts = {}
+        updated = 0
+        for index, body in enumerate(rows, start=1):
+            sys_addr = body["system_address"]
+            if sys_addr not in contexts:
+                contexts[sys_addr] = self._exobiology_system_context(sys_addr)
+            context = contexts[sys_addr]
+            if context is not None and context.has_coordinates:
+                body["star_pos"] = context.coordinates
+            predictions = _compute_exobiology_predictions(body, context)
+            self._lock_confirmed_organics_into_predictions(sys_addr, body["body_id"], predictions)
+            self.cursor.execute(
+                "UPDATE bodies SET exobiology_predictions = ? WHERE id = ?", (json.dumps(predictions), body["id"])
+            )
+            updated += 1
+            if progress_callback and index % 200 == 0:
+                progress_callback(index, len(rows), "")
+        self.conn.commit()
+        return {"skipped": False, "bodies": len(rows), "updated": updated}
+
+    def _exobiology_system_context(self, sys_addr):
+        """Stars, planet classes and position of the system, read through this parser's cursor so that
+        rows written earlier in the same (uncommitted) file are visible."""
+        if not sys_addr:
+            return None
+        try:
+            return system_context_from_db(self.cursor, sys_addr)
+        except Exception:
+            return None
+
+    def _lock_confirmed_organics_into_predictions(self, sys_addr: int, body_id: int, predictions: list):
+        """Promote scanned organics to confirmed and lock them in the predictions list."""
+        if not sys_addr or body_id is None:
+            return
+        self.cursor.execute("""
+            SELECT species_localised, species, genus_localised, genus, scan_type, base_value, first_discovery_value
+            FROM scanned_organics
+            WHERE system_address = ? AND body_id = ?
+            ORDER BY id ASC
+        """, (sys_addr, body_id))
+        rows = self.cursor.fetchall()
+        if not rows:
+            return
+
+        for row in rows:
+            sp_name = row["species_localised"] or row["species"] or ""
+            genus_name = row["genus_localised"] or row["genus"] or (sp_name.split()[0] if sp_name else "")
+            stype = (row["scan_type"] or "").lower()
+            stage_num = 3 if stype in ["analyse", "analyze"] else (2 if stype == "sample" else 1)
+            base_v = row["base_value"] or 0
+            fd_v = row["first_discovery_value"] or (base_v * 5)
+            if base_v == 0 and sp_name:
+                val_info = get_species_value(sp_name, genus_name)
+                base_v = val_info.get("base_value", 1000000)
+                fd_v = val_info.get("first_discovery_value", base_v * 5)
+
+            # Check if species or genus matches any prediction
+            # 1. Exact or partial species name match
+            matched = False
+            for p in predictions:
+                if sp_name.lower() in p["species"].lower() or p["species"].lower() in sp_name.lower():
+                    p["species"] = sp_name
+                    p["species_variant"] = sp_name
+                    p["base_value"] = base_v
+                    p["first_discovery_value"] = fd_v
+                    p["confidence"] = "confirmed"
+                    p["status"] = "Confirmed"
+                    p["stage_level"] = stage_num
+                    p["locked"] = True
+                    matched = True
+                    break
+
+            # 2. If species name didn't match directly, replace unconfirmed prediction of the SAME genus
+            # (Elite Dangerous Odyssey law: 1 species per genus per body. The scanned species confirms this genus slot)
+            if not matched and genus_name:
+                for p in predictions:
+                    if p.get("genus", "").lower() == genus_name.lower() and p.get("confidence") != "confirmed":
+                        p["species"] = sp_name
+                        p["genus"] = genus_name
+                        p["species_variant"] = sp_name
+                        p["base_value"] = base_v
+                        p["first_discovery_value"] = fd_v
+                        p["confidence"] = "confirmed"
+                        p["status"] = "Confirmed"
+                        p["stage_level"] = stage_num
+                        p["locked"] = True
+                        matched = True
+                        break
+
+            # 3. If not matched at all in predictions, insert as confirmed at the top
+            if not matched and sp_name:
+                val_info = get_species_value(sp_name, genus_name)
+                colony_dist = val_info.get("colony_distance_m", 500)
+                predictions.insert(0, {
+                    "species": sp_name,
+                    "genus": genus_name,
+                    "species_variant": sp_name,
+                    "variant_color": "",
+                    "base_value": base_v,
+                    "first_discovery_value": fd_v,
+                    "colony_distance_m": colony_dist,
+                    "fit_score": 1.0,
+                    "confidence": "confirmed",
+                    "status": "Confirmed",
+                    "stage_level": stage_num,
+                    "locked": True
+                })
+
+            # 4. Prune any remaining unconfirmed predictions of this confirmed genus (1 species per genus law)
+            if genus_name:
+                cleaned = []
+                confirmed_seen = False
+                for p in predictions:
+                    if p.get("genus", "").lower() == genus_name.lower():
+                        if p.get("confidence") == "confirmed" and not confirmed_seen:
+                            cleaned.append(p)
+                            confirmed_seen = True
+                        # Skip other unconfirmed predictions of the same genus
+                    else:
+                        cleaned.append(p)
+                predictions[:] = cleaned
+
+    def _handle_saa_scan_complete(self, data: dict):
+        sys_addr = data.get("SystemAddress")
+        body_id = data.get("BodyID")
+        body_name = data.get("BodyName")
+
+        if sys_addr is not None:
+            if body_id is not None:
+                self.cursor.execute("""
+                    UPDATE bodies SET is_mapped_by_user = 1 WHERE system_address = ? AND body_id = ?
+                """, (sys_addr, body_id))
+                self.dirty_systems.add(sys_addr)
+            elif body_name:
+                self.cursor.execute("""
+                    UPDATE bodies SET is_mapped_by_user = 1 WHERE system_address = ? AND body_name = ?
+                """, (sys_addr, body_name))
+                self.dirty_systems.add(sys_addr)
+
+    def _handle_scan_organic(self, data: dict, timestamp: str):
+        sys_addr = data.get("SystemAddress")
+        body_id = data.get("Body") if data.get("Body") is not None else data.get("BodyID")
+        scan_type = data.get("ScanType", "")
+        genus = data.get("Genus", "")
+        genus_loc = data.get("Genus_Localised", "")
+        species = data.get("Species", "")
+        species_loc = data.get("Species_Localised", "")
+        variant = data.get("Variant", "")
+        variant_loc = data.get("Variant_Localised", "")
+
+        val_info = get_species_value(species_loc or species, genus_loc or genus)
+        base_val = val_info.get("base_value", 0)
+        fd_val = val_info.get("first_discovery_value", 0)
+
+        body_name = None
+        if sys_addr is not None and body_id is not None:
+            self.cursor.execute("SELECT body_name FROM bodies WHERE system_address = ? AND body_id = ?", (sys_addr, body_id))
+            b_row = self.cursor.fetchone()
+            if b_row:
+                body_name = b_row["body_name"]
+
+        if sys_addr is not None:
+            self.cursor.execute("""
+                INSERT INTO scanned_organics (
+                    system_address, body_id, body_name, timestamp, scan_type, genus, genus_localised,
+                    species, species_localised, variant, variant_localised, base_value, first_discovery_value
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                sys_addr, body_id, body_name, timestamp, scan_type, genus, genus_loc,
+                species, species_loc, variant, variant_loc, base_val, fd_val
+            ))
+
+            # Re-lock predictions on existing body if present
+            if body_id is not None:
+                self.cursor.execute("SELECT id, exobiology_predictions FROM bodies WHERE system_address = ? AND body_id = ?", (sys_addr, body_id))
+                body_row = self.cursor.fetchone()
+                if body_row and body_row["exobiology_predictions"]:
+                    try:
+                        preds = json.loads(body_row["exobiology_predictions"])
+                        self._lock_confirmed_organics_into_predictions(sys_addr, body_id, preds)
+                        self.cursor.execute("UPDATE bodies SET exobiology_predictions = ? WHERE id = ?", (json.dumps(preds), body_row["id"]))
+                    except Exception:
+                        pass
+
+            self.dirty_systems.add(sys_addr)
+
+    def _handle_codex_entry(self, data: dict, timestamp: str):
+        if not isinstance(data, dict):
+            return
+
+        sys_addr = data.get("SystemAddress")
+        body_id = data.get("BodyID") if data.get("BodyID") is not None else (data.get("Body") if isinstance(data.get("Body"), int) else None)
+        body_name = (
+            data.get("BodyName")
+            or (data.get("Body") if isinstance(data.get("Body"), str) else None)
+            or data.get("NearestDestination")
+            or data.get("NearestDestination_Localised")
+        )
+        entry_name = data.get("Name")
+
+        if not body_name and sys_addr is not None and body_id is not None:
+            self.cursor.execute("SELECT body_name FROM bodies WHERE system_address = ? AND body_id = ?", (sys_addr, body_id))
+            brow = self.cursor.fetchone()
+            if brow and brow["body_name"]:
+                body_name = brow["body_name"]
+
+        if not body_name and body_id is not None:
+            body_name = f"天体 {body_id}"
+
+        if body_id is None and sys_addr is not None and body_name:
+            self.cursor.execute("SELECT body_id FROM bodies WHERE system_address = ? AND body_name = ?", (sys_addr, body_name))
+            brow = self.cursor.fetchone()
+            if brow and brow["body_id"] is not None:
+                body_id = brow["body_id"]
+
+        ggg_info = resolve_ggg_variant(entry_name) if entry_name and isinstance(entry_name, str) else None
+        is_ggg = 1 if ggg_info is not None else 0
+        ggg_variant_name = ggg_info[2] if ggg_info is not None else None
+
+        if is_ggg and sys_addr is not None:
+            # Frontier logs often emit CodexEntry for GGG with BodyID=0 (primary star).
+            # Verify if current body is a star; if so, resolve to the genuine gas giant planet.
+            is_star_target = False
+            if body_id is not None:
+                self.cursor.execute("SELECT star_type, planet_class FROM bodies WHERE system_address = ? AND body_id = ?", (sys_addr, body_id))
+                s_row = self.cursor.fetchone()
+                if s_row and (s_row["star_type"] or not s_row["planet_class"]):
+                    is_star_target = True
+            elif body_id == 0:
+                is_star_target = True
+
+            if is_star_target or body_id is None:
+                self.cursor.execute(
+                    "SELECT body_id, body_name, planet_class FROM bodies WHERE system_address = ? AND planet_class IS NOT NULL",
+                    (sys_addr,)
+                )
+                cand_planets = self.cursor.fetchall()
+                matching_planets = [
+                    p for p in cand_planets
+                    if is_matching_ggg_planet_class(ggg_variant_name, p["planet_class"])
+                ]
+                if matching_planets:
+                    body_id = matching_planets[0]["body_id"]
+                    body_name = matching_planets[0]["body_name"]
+                else:
+                    # Gas giant body not scanned yet; do not attribute to star
+                    body_id = None
+                    body_name = None
+
+        if sys_addr is not None and entry_name:
+            now_iso = datetime.now().isoformat()
+            self.cursor.execute("""
+                INSERT INTO codex_entries (
+                    system_address, body_id, body_name, entry_id, name, name_localised,
+                    category, sub_category, region_name, is_ggg, ggg_variant, timestamp, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(system_address, body_id, name) DO UPDATE SET
+                    body_name = COALESCE(excluded.body_name, codex_entries.body_name),
+                    name_localised = COALESCE(excluded.name_localised, codex_entries.name_localised),
+                    category = COALESCE(excluded.category, codex_entries.category),
+                    sub_category = COALESCE(excluded.sub_category, codex_entries.sub_category),
+                    region_name = COALESCE(excluded.region_name, codex_entries.region_name),
+                    is_ggg = excluded.is_ggg,
+                    ggg_variant = excluded.ggg_variant,
+                    timestamp = excluded.timestamp
+            """, (
+                sys_addr, body_id, body_name, data.get("EntryID"), entry_name,
+                data.get("Name_Localised"), data.get("Category"), data.get("SubCategory"),
+                data.get("Region_Name") or data.get("Region"),
+                is_ggg, ggg_variant_name, timestamp, now_iso
+            ))
+
+        if ggg_info is not None:
+            raw_variant, tts_speech_name, en_name = ggg_info
+
+            # Trigger priority TTS announcement only when live and enabled
+            self._check_and_trigger_ggg_alert(
+                sys_addr=sys_addr,
+                body_name=body_name,
+                is_confirmed=True,
+                variant_name=tts_speech_name
+            )
+
+            # Persist confirmed GGG anomaly tags ONLY to genuine planet bodies (never stars)
+            if sys_addr is not None and body_id is not None:
+                self.cursor.execute(
+                    "SELECT id, star_type, planet_class, anomalies_json FROM bodies WHERE system_address = ? AND body_id = ?",
+                    (sys_addr, body_id)
+                )
+                b_row = self.cursor.fetchone()
+                if b_row and not b_row["star_type"] and b_row["planet_class"]:
+                    raw_anom = b_row["anomalies_json"]
+                    anomalies = []
+                    if raw_anom:
+                        try:
+                            anomalies = json.loads(raw_anom)
+                        except Exception:
+                            anomalies = []
+                    if not isinstance(anomalies, list):
+                        anomalies = []
+
+                    confirmed_tags = ["Confirmed GGG", f"Confirmed GGG ({en_name})"]
+                    for tag_name in confirmed_tags:
+                        if not any((a.get("tag") == tag_name if isinstance(a, dict) else a == tag_name) for a in anomalies):
+                            anomalies.append({
+                                "type": "confirmed_ggg",
+                                "tag": tag_name,
+                                "color": "green",
+                                "desc": f"確定GGG: {tts_speech_name}",
+                                "desc_en": tag_name
+                            })
+
+                    new_anom_json = json.dumps(anomalies)
+                    self.cursor.execute("UPDATE bodies SET anomalies_json = ? WHERE id = ?", (new_anom_json, b_row["id"]))
+                    self.dirty_systems.add(sys_addr)
+
+            # Clean any falsely attached Confirmed GGG from star bodies in this system
+            if sys_addr is not None:
+                self.cursor.execute("SELECT id, anomalies_json FROM bodies WHERE system_address = ? AND star_type IS NOT NULL", (sys_addr,))
+                for s_row in self.cursor.fetchall():
+                    if s_row["anomalies_json"] and "Confirmed GGG" in s_row["anomalies_json"]:
+                        try:
+                            s_anoms = [a for a in json.loads(s_row["anomalies_json"]) if not ((isinstance(a, dict) and (a.get("type") == "confirmed_ggg" or "Confirmed GGG" in a.get("tag", ""))) or (isinstance(a, str) and "Confirmed GGG" in a))]
+                            self.cursor.execute("UPDATE bodies SET anomalies_json = ? WHERE id = ?", (json.dumps(s_anoms), s_row["id"]))
+                            self.dirty_systems.add(sys_addr)
+                        except Exception:
+                            pass
+            return
+
+        cat = data.get("Category", "")
+        cat_loc = (data.get("Category_Localised") or "").lower()
+        subcat = data.get("SubCategory", "")
+        
+        # Check if biological
+        is_bio = ("biology" in cat.lower() or "biology" in cat_loc or "organic" in subcat.lower())
+        if not is_bio:
+            return
+
+        sys_addr = data.get("SystemAddress")
+        body_id = data.get("BodyID") if data.get("BodyID") is not None else data.get("Body")
+        entry_name_loc = data.get("Name_Localised") or data.get("Name", "")
+        
+        # Extract species/genus
+        val_info = get_species_value(entry_name_loc)
+        species_loc = val_info.get("species", entry_name_loc)
+        genus_loc = val_info.get("genus", "")
+        base_val = val_info.get("base_value", 0)
+        fd_val = val_info.get("first_discovery_value", 0)
+
+        # Lookup body_name from bodies table if available
+        body_name = None
+        if sys_addr is not None and body_id is not None:
+            self.cursor.execute("SELECT body_name FROM bodies WHERE system_address = ? AND body_id = ?", (sys_addr, body_id))
+            b_row = self.cursor.fetchone()
+            if b_row:
+                body_name = b_row["body_name"]
+
+        if sys_addr is not None:
+            # Check if this species on this body is already recorded
+            self.cursor.execute("""
+                SELECT COUNT(*) FROM scanned_organics 
+                WHERE system_address = ? AND body_id = ? AND species_localised = ?
+            """, (sys_addr, body_id, species_loc))
+            if self.cursor.fetchone()[0] == 0:
+                self.cursor.execute("""
+                    INSERT INTO scanned_organics (
+                        system_address, body_id, body_name, timestamp, scan_type, genus, genus_localised,
+                        species, species_localised, variant, variant_localised, base_value, first_discovery_value
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    sys_addr, body_id, body_name, timestamp, "Log", "", genus_loc,
+                    "", species_loc, "", entry_name_loc, base_val, fd_val
+                ))
+                self.dirty_systems.add(sys_addr)
+
+    def _get_body_type_category(self, sys_addr: int, body_id=None, body_name=None) -> str:
+        """Classifies body into one of: 'HMC', 'Metal Rich', 'Rocky', 'Icy', 'Icy Rocky', or fallback."""
+        if not sys_addr:
+            return "Unknown"
+        p_class = None
+        if body_id is not None:
+            self.cursor.execute("SELECT planet_class FROM bodies WHERE system_address = ? AND body_id = ?", (sys_addr, body_id))
+            row = self.cursor.fetchone()
+            if row and row["planet_class"]:
+                p_class = row["planet_class"]
+        if not p_class and body_name:
+            self.cursor.execute("SELECT planet_class FROM bodies WHERE system_address = ? AND body_name = ?", (sys_addr, body_name))
+            row = self.cursor.fetchone()
+            if row and row["planet_class"]:
+                p_class = row["planet_class"]
+
+        if not p_class:
+            return "Unknown"
+
+        p_lower = p_class.lower()
+        if "high metal" in p_lower:
+            return "HMC"
+        elif "metal rich" in p_lower:
+            return "Metal Rich"
+        elif "rocky ice" in p_lower or "icy rocky" in p_lower:
+            return "Icy Rocky"
+        elif "rocky" in p_lower:
+            return "Rocky"
+        elif "icy" in p_lower:
+            return "Icy"
+        return p_class
+
+    def _handle_material_collected(self, data: dict, timestamp: str):
+        # Record surface raw material extraction
+        cat = data.get("Category", "Raw")
+        name = data.get("Name", "")
+        name_loc = data.get("Name_Localised") or name
+        count = data.get("Count", 1)
+
+        sys_addr = self.current_system_address
+        star_sys = self.current_star_system
+        body_id = self.current_body_id
+        body_name = self.current_body_name
+        srv_type = self.srv_type or ("mev_rhino" if self.in_srv else None)
+
+        # Classify body_type (Icy, Rocky, Icy Rocky, HMC, Metal Rich)
+        body_type = self._get_body_type_category(sys_addr, body_id, body_name)
+
+        # If in SRV and live, query live Status.json for latest surface coordinates
+        if self.in_srv and self.is_live:
+            lat, lon = telemetry_tracker.get_coordinates()
+            if lat is not None and lon is not None:
+                self.current_latitude = lat
+                self.current_longitude = lon
+
+        if sys_addr and name:
+            self.cursor.execute("""
+                INSERT INTO surface_mining_activities (
+                    system_address, star_system, body_id, body_name, body_type,
+                    srv_type, material_name, material_name_localised, category,
+                    count, latitude, longitude, timestamp
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                sys_addr, star_sys, body_id, body_name, body_type,
+                srv_type, name, name_loc, cat,
+                count, self.current_latitude, self.current_longitude, timestamp
+            ))
+            self.dirty_systems.add(sys_addr)
+            if self.current_latitude is None:
+                self._has_unlocated_mining = True
+
+            # Record into dedicated surface_mining_sites table (with top 2 digits / ~0.2 deg grouping)
+            if self.in_srv and self.current_latitude is not None and self.current_longitude is not None:
+                try:
+                    save_or_merge_mining_site(
+                        conn=self.conn,
+                        system_address=sys_addr,
+                        star_system=star_sys or "Unknown",
+                        body_id=body_id,
+                        body_name=body_name or (f"Body {body_id}" if body_id is not None else "Surface"),
+                        latitude=self.current_latitude,
+                        longitude=self.current_longitude,
+                        material_name=name_loc or name,
+                        timestamp=timestamp
+                    )
+                except Exception as e:
+                    print(f"[Mining Site Save Warning] {e}")
+
+    def _handle_mining_refined(self, data: dict, timestamp: str):
+        # Only track surface/SRV mining refined commodities
+        if not self.in_srv:
+            return
+
+        raw_type = data.get("Type", "")
+        clean_type = raw_type.replace("$", "").replace("_name;", "").replace(";", "").strip()
+        type_loc = data.get("Type_Localised") or clean_type
+
+        # If in SRV and live, query live Status.json for latest surface coordinates
+        if self.is_live:
+            lat, lon = telemetry_tracker.get_coordinates()
+            if lat is not None and lon is not None:
+                self.current_latitude = lat
+                self.current_longitude = lon
+
+        sys_addr = self.current_system_address
+        star_sys = self.current_star_system
+        body_id = self.current_body_id
+        body_name = self.current_body_name
+        srv_type = self.srv_type or "mev_rhino"
+
+        body_type = self._get_body_type_category(sys_addr, body_id, body_name)
+
+        if sys_addr and clean_type:
+            self.cursor.execute("""
+                INSERT INTO surface_mining_activities (
+                    system_address, star_system, body_id, body_name, body_type,
+                    srv_type, material_name, material_name_localised, category,
+                    count, latitude, longitude, timestamp
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                sys_addr, star_sys, body_id, body_name, body_type,
+                srv_type, clean_type, type_loc, "Refined",
+                1, self.current_latitude, self.current_longitude, timestamp
+            ))
+            self.dirty_systems.add(sys_addr)
+
+            # Record into dedicated surface_mining_sites table (with top 2 digits / ~0.2 deg grouping)
+            if self.current_latitude is not None and self.current_longitude is not None:
+                try:
+                    save_or_merge_mining_site(
+                        conn=self.conn,
+                        system_address=sys_addr,
+                        star_system=star_sys or "Unknown",
+                        body_id=body_id,
+                        body_name=body_name or (f"Body {body_id}" if body_id is not None else "Surface"),
+                        latitude=self.current_latitude,
+                        longitude=self.current_longitude,
+                        material_name=type_loc or clean_type,
+                        timestamp=timestamp
+                    )
+                except Exception as e:
+                    print(f"[Mining Site Save Warning] {e}")
+
+    def _update_system_stats(self, sys_addr: int):
+        self.cursor.execute("""
+            SELECT 
+                COUNT(*) as total_count,
+                COUNT(CASE WHEN scan_type IS NULL OR scan_type != 'EDSM_Known' THEN 1 ELSE NULL END) as count,
+                MAX(star_system) as sys_name,
+                MAX(scan_timestamp) as latest_ts,
+                (SELECT star_type FROM bodies WHERE system_address = ? AND star_type IS NOT NULL ORDER BY distance_from_arrival_ls ASC, body_id ASC LIMIT 1) as main_star,
+                (SELECT age_my FROM bodies WHERE system_address = ? AND star_type IS NOT NULL AND age_my IS NOT NULL ORDER BY distance_from_arrival_ls ASC, body_id ASC LIMIT 1) as main_star_age,
+                (SELECT subclass FROM bodies WHERE system_address = ? AND star_type IS NOT NULL AND subclass IS NOT NULL ORDER BY distance_from_arrival_ls ASC, body_id ASC LIMIT 1) as main_star_subclass,
+                (SELECT stellar_mass FROM bodies WHERE system_address = ? AND star_type IS NOT NULL AND stellar_mass IS NOT NULL ORDER BY distance_from_arrival_ls ASC, body_id ASC LIMIT 1) as main_star_mass,
+                (SELECT (COALESCE(SUM(b.stellar_mass), 0.0) + COALESCE(SUM(b.mass_em) / 332946.0487, 0.0)) FROM bodies b WHERE b.system_address = ? AND (b.stellar_mass IS NOT NULL OR b.mass_em IS NOT NULL)) as total_system_mass,
+                SUM(CASE WHEN scan_type IS NULL OR scan_type != 'EDSM_Known' THEN fss_value ELSE 0 END) as sum_fss,
+                SUM(CASE WHEN scan_type IS NULL OR scan_type != 'EDSM_Known' THEN dss_value ELSE 0 END) as sum_dss,
+                SUM(CASE WHEN scan_type IS NULL OR scan_type != 'EDSM_Known' THEN max_potential_value ELSE 0 END) as sum_max,
+                SUM(CASE WHEN scan_type IS NULL OR scan_type != 'EDSM_Known' THEN bio_signals ELSE 0 END) as sum_bio,
+                MAX(CASE WHEN (scan_type IS NULL OR scan_type != 'EDSM_Known') AND (LOWER(planet_class) LIKE '%earthlike%' OR LOWER(planet_class) LIKE '%earth-like%') THEN 1 ELSE 0 END) as elw,
+                MAX(CASE WHEN (scan_type IS NULL OR scan_type != 'EDSM_Known') AND LOWER(planet_class) LIKE '%water world%' THEN 1 ELSE 0 END) as ww,
+                MAX(CASE WHEN (scan_type IS NULL OR scan_type != 'EDSM_Known') AND LOWER(planet_class) LIKE '%ammonia%' THEN 1 ELSE 0 END) as ammonia,
+                MAX(CASE WHEN (scan_type IS NULL OR scan_type != 'EDSM_Known') AND LOWER(terraforming_state) LIKE '%terraform%' THEN 1 ELSE 0 END) as tf,
+                MAX(CASE WHEN (scan_type IS NULL OR scan_type != 'EDSM_Known') AND bio_signals > 0 THEN 1 ELSE 0 END) as bio,
+                MAX(CASE WHEN (scan_type IS NULL OR scan_type != 'EDSM_Known') AND landable = 1 THEN 1 ELSE 0 END) as landable,
+                MAX(CASE WHEN (scan_type IS NULL OR scan_type != 'EDSM_Known') AND landable = 1 AND surface_gravity_g >= 3.0 THEN 1 ELSE 0 END) as high_g,
+                MAX(CASE WHEN (scan_type IS NULL OR scan_type != 'EDSM_Known') AND anomalies_json != '[]' AND anomalies_json IS NOT NULL THEN 1 ELSE 0 END) as anomalies,
+                SUM(CASE WHEN was_discovered = 0 AND (scan_type IS NULL OR scan_type != 'EDSM_Known') THEN 1 ELSE 0 END) as first_disc_count,
+                MAX(CASE WHEN was_discovered = 0 AND (scan_type IS NULL OR scan_type != 'EDSM_Known') THEN 1 ELSE 0 END) as has_first_disc,
+                ROUND(AVG(CASE WHEN (scan_type IS NULL OR scan_type != 'EDSM_Known') AND landable = 1 AND radius IS NOT NULL AND radius > 0 THEN radius ELSE NULL END), 1) as avg_landable_radius
+            FROM bodies 
+            WHERE system_address = ? 
+              AND (star_type IS NOT NULL OR planet_class IS NOT NULL)
+        """, (sys_addr, sys_addr, sys_addr, sys_addr, sys_addr, sys_addr))
+        row = self.cursor.fetchone()
+        if row and row["total_count"] > 0:
+            sys_name = row["sys_name"] or f"System {sys_addr}"
+            ts = row["latest_ts"] or datetime.now().isoformat()
+            main_star = row["main_star"]
+            main_star_age = row["main_star_age"]
+            main_star_subclass = row["main_star_subclass"]
+            main_star_mass = row["main_star_mass"]
+            total_sys_mass = row["total_system_mass"]
+
+            # Check if system is populated or unvisited/external - unvisited systems or populated bubble systems are never CMDR first discoveries
+            self.cursor.execute("SELECT population, visit_count, is_external FROM systems WHERE system_address = ?", (sys_addr,))
+            sys_meta_row = self.cursor.fetchone()
+            is_populated = bool(sys_meta_row and sys_meta_row["population"] and sys_meta_row["population"] > 0)
+            is_unvisited_or_ext = bool(sys_meta_row and (sys_meta_row["is_external"] == 1 or (sys_meta_row["visit_count"] is not None and sys_meta_row["visit_count"] == 0)))
+            disallow_first_disc = is_populated or is_unvisited_or_ext
+            first_disc_count = 0 if disallow_first_disc else (row["first_disc_count"] or 0)
+            has_first_disc = 0 if disallow_first_disc else (row["has_first_disc"] or 0)
+
+            # Evaluate mining scout candidate grade based on Pristine reserve and Metallic/Icy rings
+            self.cursor.execute("SELECT system_reserve FROM systems WHERE system_address = ?", (sys_addr,))
+            sys_res_row = self.cursor.fetchone()
+            sys_reserve = sys_res_row["system_reserve"] if sys_res_row else ""
+            is_pristine = (sys_reserve or "").strip().lower() in ["pristine", "$reserve_pristine;"]
+
+            mining_grade = ""
+            if is_pristine:
+                self.cursor.execute("""
+                    SELECT 
+                        MAX(CASE WHEN rings LIKE '%Metallic%' THEN 1 ELSE 0 END) as has_metallic,
+                        MAX(CASE WHEN rings LIKE '%Icy%' THEN 1 ELSE 0 END) as has_icy
+                    FROM bodies
+                    WHERE system_address = ? AND rings IS NOT NULL AND rings != ''
+                """, (sys_addr,))
+                ring_row = self.cursor.fetchone()
+                if ring_row:
+                    if ring_row["has_metallic"]:
+                        mining_grade = "High"
+                    elif ring_row["has_icy"]:
+                        mining_grade = "Medium"
+
+            self.cursor.execute("""
+                INSERT INTO systems (
+                    system_address, star_system, first_visited, last_visited,
+                    scanned_bodies, main_star_type, total_fss_value, total_dss_value,
+                    total_potential_value, total_bio_signals, has_elw,
+                    has_water_world, has_ammonia, has_terraformable, has_bio,
+                    has_landable, has_high_g, has_anomalies, first_discovered_bodies, has_first_discover,
+                    avg_landable_radius, mining_scout_grade, system_age_my,
+                    main_star_subclass,
+                    main_star_mass, total_system_mass
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(system_address) DO UPDATE SET
+                    scanned_bodies = excluded.scanned_bodies,
+                    main_star_type = COALESCE(excluded.main_star_type, systems.main_star_type),
+                    total_fss_value = excluded.total_fss_value,
+                    total_dss_value = excluded.total_dss_value,
+                    total_potential_value = excluded.total_potential_value,
+                    total_bio_signals = excluded.total_bio_signals,
+                    has_elw = excluded.has_elw,
+                    has_water_world = excluded.has_water_world,
+                    has_ammonia = excluded.has_ammonia,
+                    has_terraformable = excluded.has_terraformable,
+                    has_bio = excluded.has_bio,
+                    has_landable = excluded.has_landable,
+                    has_high_g = excluded.has_high_g,
+                    has_anomalies = excluded.has_anomalies,
+                    first_discovered_bodies = excluded.first_discovered_bodies,
+                    has_first_discover = excluded.has_first_discover,
+                    avg_landable_radius = excluded.avg_landable_radius,
+                    mining_scout_grade = CASE WHEN excluded.mining_scout_grade != '' THEN excluded.mining_scout_grade ELSE systems.mining_scout_grade END,
+                    system_age_my = COALESCE(excluded.system_age_my, systems.system_age_my),
+                    main_star_subclass = COALESCE(excluded.main_star_subclass, systems.main_star_subclass),
+                    main_star_mass = COALESCE(excluded.main_star_mass, systems.main_star_mass),
+                    total_system_mass = COALESCE(excluded.total_system_mass, systems.total_system_mass)
+            """, (
+                sys_addr, sys_name, ts, ts,
+                row["count"], main_star, row["sum_fss"] or 0, row["sum_dss"] or 0,
+                row["sum_max"] or 0, row["sum_bio"] or 0, row["elw"] or 0,
+                row["ww"] or 0, row["ammonia"] or 0, row["tf"] or 0, row["bio"] or 0,
+                row["landable"] or 0, row["high_g"] or 0, row["anomalies"] or 0,
+                first_disc_count, has_first_disc,
+                row["avg_landable_radius"] or 0,
+                mining_grade,
+                main_star_age,
+                main_star_subclass,
+                main_star_mass,
+                total_sys_mass
+            ))
+
+    def parse_file(self, filepath: str, progress_callback=None):
+        path = Path(filepath)
+        if not path.exists():
+            return
+
+        try:
+            stat = path.stat()
+            file_size = stat.st_size
+            last_mod = stat.st_mtime
+        except (OSError, PermissionError):
+            # File might be temporarily locked or being created by Elite Dangerous; retry safely later
+            return
+
+        filename = path.name
+
+        self.cursor.execute("SELECT file_size, last_modified, last_line_offset FROM parsed_files WHERE filename = ?", (filename,))
+        row = self.cursor.fetchone()
+
+        start_offset = 0
+        if row:
+            if row["file_size"] == file_size and row["last_modified"] == last_mod:
+                # Already up to date
+                return
+            start_offset = row["last_line_offset"] or 0
+            # If file was truncated or recreated, reset offset to start of file
+            if file_size < start_offset:
+                start_offset = 0
+
+        # Non-blocking safe read: Open file in binary read-only mode for exact byte offsets.
+        # To prevent race conditions with Elite Dangerous disk flushes, read line by line
+        # ensuring any trailing incomplete line (missing newline) is NOT processed and offset is wound back.
+        try:
+            with open(filepath, "rb") as f:
+                if start_offset > 0:
+                    f.seek(start_offset)
+
+                valid_bytes_processed = start_offset
+                while True:
+                    line_start_pos = f.tell()
+                    raw_bytes = f.readline()
+                    if not raw_bytes:
+                        break
+
+                    # Check if line was completely written (must end with newline b'\n' or b'\r')
+                    # If file ends without newline, Elite Dangerous is currently buffering/writing this line!
+                    if not raw_bytes.endswith(b"\n") and not raw_bytes.endswith(b"\r"):
+                        # Incomplete line! Do NOT advance offset past line_start_pos
+                        break
+
+                    line = raw_bytes.decode("utf-8", errors="replace")
+                    self.process_journal_line(line)
+                    valid_bytes_processed = f.tell()
+
+                current_offset = valid_bytes_processed
+        except (PermissionError, OSError) as read_err:
+            # If Elite Dangerous is holding an exclusive write/flush handle, don't crash or corrupt.
+            # The next watcher cycle will safely pick it up.
+            print(f"[Journal Read Warning] File locked or unavailable ({filename}): {read_err}")
+            return
+
+        # Batch-update systems modified during this file's parse
+        self.flush_dirty_systems()
+
+        now_str = datetime.now().isoformat()
+        self.cursor.execute("""
+            INSERT INTO parsed_files (filename, file_size, last_modified, parsed_at, last_line_offset)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(filename) DO UPDATE SET
+                file_size = excluded.file_size,
+                last_modified = excluded.last_modified,
+                parsed_at = excluded.parsed_at,
+                last_line_offset = excluded.last_line_offset
+        """, (filename, file_size, last_mod, now_str, current_offset))
+
+        self.conn.commit()
+
+    def parse_all_journals(self, journal_dir: str, progress_callback=None) -> int:
+        files = sorted(glob.glob(os.path.join(journal_dir, "Journal.*.log")))
+        total = len(files)
+        count = 0
+        for fpath in files:
+            self.parse_file(fpath)
+            count += 1
+            if progress_callback:
+                progress_callback(count, total, Path(fpath).name)
+        self.flush_dirty_systems()
+        self.conn.commit()
+        return count
+
+    def backfill_star_ages(self, journal_dir: str | Path, progress_callback=None) -> dict:
+        """
+        Fills bodies.age_my / systems.system_age_my for journals parsed before the
+        age columns existed. Reads only Age_MY from star Scan events (no event replay,
+        so visit counts and payouts are untouched).
+        """
+        files = sorted(glob.glob(os.path.join(str(journal_dir), "Journal.*.log")))
+        total_files = len(files)
+        updated_bodies = 0
+        touched_systems = set()
+
+        for idx, fpath in enumerate(files, start=1):
+            rows = []
+            try:
+                with open(fpath, "rb") as f:
+                    for line_bytes in f:
+                        if b'"Age_MY"' not in line_bytes or b'"Scan"' not in line_bytes:
+                            continue
+                        try:
+                            data = json.loads(line_bytes.decode("utf-8", errors="replace"))
+                        except Exception:
+                            continue
+                        if data.get("event") != "Scan" or not data.get("StarType"):
+                            continue
+                        age = data.get("Age_MY")
+                        sys_addr = data.get("SystemAddress")
+                        body_id = data.get("BodyID")
+                        if age is None or sys_addr is None or body_id is None:
+                            continue
+                        rows.append((age, sys_addr, body_id))
+            except (PermissionError, OSError) as e:
+                print(f"[Star Age Backfill Warning] Could not read {fpath}: {e}")
+                continue
+
+            for age, sys_addr, body_id in rows:
+                self.cursor.execute(
+                    "UPDATE bodies SET age_my = ? WHERE system_address = ? AND body_id = ? AND age_my IS NULL",
+                    (age, sys_addr, body_id),
+                )
+                if self.cursor.rowcount:
+                    updated_bodies += self.cursor.rowcount
+                    touched_systems.add(sys_addr)
+
+            if progress_callback:
+                progress_callback(idx, total_files, Path(fpath).name)
+
+        for sys_addr in touched_systems:
+            self.cursor.execute("""
+                UPDATE systems
+                SET system_age_my = (
+                    SELECT b.age_my FROM bodies b
+                    WHERE b.system_address = systems.system_address
+                      AND b.star_type IS NOT NULL AND b.age_my IS NOT NULL
+                    ORDER BY b.distance_from_arrival_ls ASC, b.body_id ASC
+                    LIMIT 1
+                )
+                WHERE system_address = ? AND system_age_my IS NULL
+            """, (sys_addr,))
+        self.conn.commit()
+
+        return {
+            "scanned_files": total_files,
+            "bodies_updated": updated_bodies,
+            "systems_updated": len(touched_systems),
+        }
+
+    def backfill_star_subclasses(self, journal_dir: str | Path, progress_callback=None) -> dict:
+        """
+        Fast scanner across all Journal.*.log files in journal_dir looking for
+        Scan events containing StarType and Subclass to populate bodies.subclass
+        and systems.main_star_subclass without re-parsing entire log files.
+        """
+        j_path = Path(journal_dir)
+        if not j_path.exists():
+            return {"scanned_files": 0, "bodies_updated": 0, "systems_updated": 0}
+
+        files = sorted(glob.glob(os.path.join(str(j_path), "Journal.*.log")))
+        total_files = len(files)
+        updated_bodies = 0
+        touched_systems = set()
+
+        for idx, fpath in enumerate(files, start=1):
+            try:
+                with open(fpath, "rb") as f:
+                    for line_bytes in f:
+                        if b'"StarType"' in line_bytes and b'"Subclass"' in line_bytes:
+                            try:
+                                data = json.loads(line_bytes.decode("utf-8", errors="ignore"))
+                                if data.get("event") == "Scan" and "Subclass" in data and "SystemAddress" in data:
+                                    sys_addr = data["SystemAddress"]
+                                    body_id = data.get("BodyID")
+                                    subclass = data["Subclass"]
+                                    if body_id is not None and subclass is not None:
+                                        self.cursor.execute("""
+                                            UPDATE bodies
+                                            SET subclass = ?
+                                            WHERE system_address = ? AND body_id = ? AND subclass IS NULL
+                                        """, (subclass, sys_addr, body_id))
+                                        if self.cursor.rowcount > 0:
+                                            updated_bodies += self.cursor.rowcount
+                                            touched_systems.add(sys_addr)
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+            if progress_callback and idx % 50 == 0:
+                progress_callback(idx, total_files, Path(fpath).name)
+
+        for sys_addr in touched_systems:
+            self.cursor.execute("""
+                UPDATE systems
+                SET main_star_subclass = (
+                    SELECT b.subclass FROM bodies b
+                    WHERE b.system_address = systems.system_address
+                      AND b.star_type IS NOT NULL AND b.subclass IS NOT NULL
+                    ORDER BY b.distance_from_arrival_ls ASC, b.body_id ASC
+                    LIMIT 1
+                )
+                WHERE system_address = ?
+            """, (sys_addr,))
+        self.conn.commit()
+
+        return {
+            "scanned_files": total_files,
+            "bodies_updated": updated_bodies,
+            "systems_updated": len(touched_systems)
+        }
+
+    def scan_historical_codex_entries(self, journal_dir: str | Path, progress_callback=None) -> dict:
+        """
+        Fast scanner across all Journal.*.log files in journal_dir specifically looking for
+        CodexEntry events to discover historical GGGs and record them into codex_entries
+        and bodies without re-parsing entire log files.
+        Audio TTS is suppressed during historical scanning.
+        """
+        j_path = Path(journal_dir)
+        if not j_path.exists():
+            return {"scanned_files": 0, "codex_entries_found": 0, "ggg_entries_found": 0, "details": []}
+
+        files = sorted(glob.glob(os.path.join(str(j_path), "Journal.*.log")))
+        total_files = len(files)
+        total_codex = 0
+        total_ggg = 0
+        ggg_details = []
+
+        prev_live = self.is_live
+        self.is_live = False
+
+        try:
+            for idx, fpath in enumerate(files, start=1):
+                try:
+                    with open(fpath, "rb") as f:
+                        for line_bytes in f:
+                            if b'"event":"CodexEntry"' in line_bytes or b'"event": "CodexEntry"' in line_bytes:
+                                try:
+                                    line_str = line_bytes.decode("utf-8", errors="replace").strip()
+                                    if line_str:
+                                        data = json.loads(line_str)
+                                        ts = data.get("timestamp") or datetime.now().isoformat()
+                                        self._handle_codex_entry(data, ts)
+                                        total_codex += 1
+                                        if resolve_ggg_variant(data.get("Name", "")) is not None:
+                                            total_ggg += 1
+                                            ggg_details.append({
+                                                "system_address": data.get("SystemAddress"),
+                                                "body_id": data.get("BodyID") if data.get("BodyID") is not None else data.get("Body"),
+                                                "name": data.get("Name"),
+                                                "name_localised": data.get("Name_Localised"),
+                                                "timestamp": ts
+                                            })
+                                except Exception:
+                                    continue
+                except (PermissionError, OSError) as e:
+                    print(f"[Historical Codex Scan Warning] Could not read {fpath}: {e}")
+                    continue
+
+                if progress_callback:
+                    progress_callback(idx, total_files, Path(fpath).name)
+
+            self.flush_dirty_systems()
+            self.conn.commit()
+        finally:
+            self.is_live = prev_live
+
+        return {
+            "scanned_files": total_files,
+            "codex_entries_found": total_codex,
+            "ggg_entries_found": total_ggg,
+            "details": ggg_details
+        }

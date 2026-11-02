@@ -1,0 +1,99 @@
+"""
+EDSM / Local DB Stats Aggregator.
+Recalculates system-level aggregated statistics and mining scout candidate grades from bodies.
+"""
+
+def update_system_aggregated_stats(conn, system_address: int):
+    """Recalculates system-level exploration values and flags from celestial bodies."""
+    c = conn.cursor()
+    c.execute("""
+        SELECT 
+            COUNT(*) as total_count,
+            COUNT(CASE WHEN scan_type IS NULL OR scan_type != 'EDSM_Known' THEN 1 ELSE NULL END) as count,
+            MAX(star_system) as sys_name,
+            (SELECT star_type FROM bodies WHERE system_address = ? AND star_type IS NOT NULL ORDER BY distance_from_arrival_ls ASC, body_id ASC LIMIT 1) as main_star,
+            (SELECT stellar_mass FROM bodies WHERE system_address = ? AND star_type IS NOT NULL AND stellar_mass IS NOT NULL ORDER BY distance_from_arrival_ls ASC, body_id ASC LIMIT 1) as main_star_mass,
+            (SELECT (COALESCE(SUM(b.stellar_mass), 0.0) + COALESCE(SUM(b.mass_em) / 332946.0487, 0.0)) FROM bodies b WHERE b.system_address = ? AND (b.stellar_mass IS NOT NULL OR b.mass_em IS NOT NULL)) as total_system_mass,
+            SUM(CASE WHEN scan_type IS NULL OR scan_type != 'EDSM_Known' THEN fss_value ELSE 0 END) as sum_fss,
+            SUM(CASE WHEN scan_type IS NULL OR scan_type != 'EDSM_Known' THEN dss_value ELSE 0 END) as sum_dss,
+            SUM(CASE WHEN scan_type IS NULL OR scan_type != 'EDSM_Known' THEN max_potential_value ELSE 0 END) as sum_max,
+            SUM(CASE WHEN scan_type IS NULL OR scan_type != 'EDSM_Known' THEN bio_signals ELSE 0 END) as sum_bio,
+            MAX(CASE WHEN (scan_type IS NULL OR scan_type != 'EDSM_Known') AND (LOWER(planet_class) LIKE '%earthlike%' OR LOWER(planet_class) LIKE '%earth-like%') THEN 1 ELSE 0 END) as elw,
+            MAX(CASE WHEN (scan_type IS NULL OR scan_type != 'EDSM_Known') AND LOWER(planet_class) LIKE '%water world%' THEN 1 ELSE 0 END) as ww,
+            MAX(CASE WHEN (scan_type IS NULL OR scan_type != 'EDSM_Known') AND LOWER(planet_class) LIKE '%ammonia%' THEN 1 ELSE 0 END) as ammonia,
+            MAX(CASE WHEN (scan_type IS NULL OR scan_type != 'EDSM_Known') AND LOWER(terraforming_state) LIKE '%terraform%' THEN 1 ELSE 0 END) as tf,
+            MAX(CASE WHEN (scan_type IS NULL OR scan_type != 'EDSM_Known') AND bio_signals > 0 THEN 1 ELSE 0 END) as bio,
+            MAX(CASE WHEN (scan_type IS NULL OR scan_type != 'EDSM_Known') AND landable = 1 THEN 1 ELSE 0 END) as landable,
+            MAX(CASE WHEN (scan_type IS NULL OR scan_type != 'EDSM_Known') AND landable = 1 AND surface_gravity_g >= 3.0 THEN 1 ELSE 0 END) as high_g,
+            MAX(CASE WHEN (scan_type IS NULL OR scan_type != 'EDSM_Known') AND anomalies_json != '[]' AND anomalies_json IS NOT NULL THEN 1 ELSE 0 END) as anomalies,
+            ROUND(AVG(CASE WHEN (scan_type IS NULL OR scan_type != 'EDSM_Known') AND landable = 1 AND radius IS NOT NULL AND radius > 0 THEN radius ELSE NULL END), 1) as avg_landable_radius
+        FROM bodies 
+        WHERE system_address = ? 
+          AND (star_type IS NOT NULL OR planet_class IS NOT NULL)
+    """, (system_address, system_address, system_address, system_address))
+    row = c.fetchone()
+    if not row or row["total_count"] == 0:
+        return
+
+    # Evaluate mining scout candidate grade based on Pristine reserve and Metallic/Icy rings
+    c.execute("SELECT system_reserve FROM systems WHERE system_address = ?", (system_address,))
+    sys_res_row = c.fetchone()
+    sys_reserve = sys_res_row["system_reserve"] if sys_res_row else ""
+    is_pristine = (sys_reserve or "").strip().lower() in ["pristine", "$reserve_pristine;"]
+
+    mining_grade = ""
+    if is_pristine:
+        c.execute("""
+            SELECT 
+                MAX(CASE WHEN rings LIKE '%Metallic%' THEN 1 ELSE 0 END) as has_metallic,
+                MAX(CASE WHEN rings LIKE '%Icy%' THEN 1 ELSE 0 END) as has_icy
+            FROM bodies
+            WHERE system_address = ? AND rings IS NOT NULL AND rings != ''
+        """, (system_address,))
+        ring_row = c.fetchone()
+        if ring_row:
+            if ring_row["has_metallic"]:
+                mining_grade = "High"
+            elif ring_row["has_icy"]:
+                mining_grade = "Medium"
+
+    # Check whether system was genuinely visited by CMDR
+    c.execute("SELECT visit_count, is_external FROM systems WHERE system_address = ?", (system_address,))
+    sys_visit_row = c.fetchone()
+    is_unvisited_or_ext = bool(sys_visit_row and (sys_visit_row["is_external"] == 1 or (sys_visit_row["visit_count"] is not None and sys_visit_row["visit_count"] == 0)))
+    effective_scanned_bodies = 0 if is_unvisited_or_ext else row["count"]
+
+    c.execute("""
+        UPDATE systems SET
+            scanned_bodies = ?,
+            main_star_type = COALESCE(main_star_type, ?),
+            total_fss_value = ?,
+            total_dss_value = ?,
+            total_potential_value = ?,
+            total_bio_signals = ?,
+            has_elw = ?,
+            has_water_world = ?,
+            has_ammonia = ?,
+            has_terraformable = ?,
+            has_bio = ?,
+            has_landable = ?,
+            has_high_g = ?,
+            has_anomalies = ?,
+            has_first_discover = CASE WHEN is_external = 1 OR COALESCE(visit_count, 0) = 0 THEN 0 ELSE has_first_discover END,
+            first_discovered_bodies = CASE WHEN is_external = 1 OR COALESCE(visit_count, 0) = 0 THEN 0 ELSE first_discovered_bodies END,
+            avg_landable_radius = ?,
+            mining_scout_grade = ?,
+            main_star_mass = COALESCE(main_star_mass, ?),
+            total_system_mass = COALESCE(total_system_mass, ?)
+        WHERE system_address = ?
+    """, (
+        effective_scanned_bodies, row["main_star"], row["sum_fss"] or 0, row["sum_dss"] or 0,
+        row["sum_max"] or 0, row["sum_bio"] or 0, row["elw"] or 0,
+        row["ww"] or 0, row["ammonia"] or 0, row["tf"] or 0, row["bio"] or 0,
+        row["landable"] or 0, row["high_g"] or 0, row["anomalies"] or 0,
+        row["avg_landable_radius"] or 0,
+        mining_grade,
+        row["main_star_mass"],
+        row["total_system_mass"],
+        system_address
+    ))

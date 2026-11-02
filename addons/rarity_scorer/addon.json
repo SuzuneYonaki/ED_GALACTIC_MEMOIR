@@ -1,0 +1,8 @@
+{
+  "id": "rarity_scorer",
+  "name": "天体物理レア度スコア",
+  "version": "1.0.0",
+  "description": "星系年齢や軌道・密度などの物理的特徴から天体の希少性を評価し、グリーンガスジャイアント候補も判定します。",
+  "entry": "addon.py",
+  "enabled_by_default": false
+}

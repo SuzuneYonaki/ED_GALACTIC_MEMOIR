@@ -1,0 +1,9 @@
+{
+  "id": "sample_hello",
+  "name": "サンプルアドオン",
+  "version": "0.1.0",
+  "description": "アドオン機構の動作確認用サンプルです。既定では無効になっています。",
+  "entry": "addon.py",
+  "enabled_by_default": false,
+  "ui_entry": "ui/panel.js"
+}
