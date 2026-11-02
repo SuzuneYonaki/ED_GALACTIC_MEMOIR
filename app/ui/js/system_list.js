@@ -1096,6 +1096,20 @@ function initLayoutSwitcher() {
     if (layoutIcon) {
       layoutIcon.innerText = mode === '2col' ? '🗖' : '◫';
     }
+
+    const leftControlsCol = document.getElementById('left-controls-col');
+    const btnExpandLeftControls = document.getElementById('btn-expand-left-controls');
+    if (mode === '1col') {
+      if (leftControlsCol) leftControlsCol.classList.remove('collapsed');
+      if (btnExpandLeftControls) btnExpandLeftControls.style.display = 'none';
+    } else if (mode === '2col') {
+      try {
+        const isControlsCollapsed = localStorage.getItem('ed_left_controls_collapsed') === 'true';
+        if (leftControlsCol) leftControlsCol.classList.toggle('collapsed', isControlsCollapsed);
+        if (btnExpandLeftControls) btnExpandLeftControls.style.display = isControlsCollapsed ? 'flex' : 'none';
+      } catch (e) {}
+    }
+
     try {
       localStorage.setItem('ed_ui_layout', mode);
     } catch (e) {}

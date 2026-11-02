@@ -469,6 +469,11 @@
 
       <!-- Left Column 2: System Cards & Pagination -->
       <div class="left-cards-col" id="left-cards-col">
+        <!-- Expand bar when search controls are collapsed in 2-column mode -->
+        <div id="btn-expand-left-controls" class="expand-controls-bar" style="display: none; padding: 5px 10px; background: rgba(0,0,0,0.3); border-bottom: 1px solid var(--border-color); cursor: pointer; font-size: 0.72rem; color: var(--ed-orange); align-items: center; justify-content: space-between;">
+          <span style="display: inline-flex; align-items: center; gap: 5px;"><span>🔍</span> <span data-i18n="expand_search_panel">検索・フィルターパネルを展開</span></span>
+          <span>▶</span>
+        </div>
         <div id="system-list" class="system-list">
           <!-- Systems injected by JS -->
         </div>

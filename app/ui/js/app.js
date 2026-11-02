@@ -2206,9 +2206,41 @@ function initPaneManager() {
   btnToggleLeft?.addEventListener('click', () => toggleLeft());
   btnToggleRight?.addEventListener('click', () => toggleRight());
 
+  // Controls column collapse management (allows collapsing search box in 2-column mode)
+  const leftControlsCol = document.getElementById('left-controls-col');
+  const btnExpandLeftControls = document.getElementById('btn-expand-left-controls');
+
+  function toggleLeftControls(collapse) {
+    const is2Col = document.querySelector('.main-container')?.classList.contains('layout-2col-left');
+    if (!is2Col || !leftControlsCol) {
+      toggleLeft(collapse);
+      return;
+    }
+    const shouldCollapse = collapse !== undefined ? collapse : !leftControlsCol.classList.contains('collapsed');
+    leftControlsCol.classList.toggle('collapsed', shouldCollapse);
+    if (btnExpandLeftControls) {
+      btnExpandLeftControls.style.display = shouldCollapse ? 'flex' : 'none';
+    }
+    try {
+      localStorage.setItem('ed_left_controls_collapsed', shouldCollapse ? 'true' : 'false');
+    } catch (e) {}
+    window.dispatchEvent(new Event('resize'));
+  }
+
+  // Restore 2-col left controls collapsed state if previously saved
+  try {
+    if (document.querySelector('.main-container')?.classList.contains('layout-2col-left')) {
+      if (localStorage.getItem('ed_left_controls_collapsed') === 'true' && leftControlsCol) {
+        leftControlsCol.classList.add('collapsed');
+        if (btnExpandLeftControls) btnExpandLeftControls.style.display = 'flex';
+      }
+    }
+  } catch (e) {}
+
   // Event Listeners for Pane Header Collapse Buttons
-  btnCollapseLeft?.addEventListener('click', () => toggleLeft(true));
+  btnCollapseLeft?.addEventListener('click', () => toggleLeftControls(true));
   btnCollapseRight?.addEventListener('click', () => toggleRight(true));
+  btnExpandLeftControls?.addEventListener('click', () => toggleLeftControls(false));
 
   // Event Listeners for Floating Expand Tabs
   tabExpandLeft?.addEventListener('click', () => toggleLeft(false));
@@ -2406,8 +2438,9 @@ function initPaneManager() {
     function onMouseMove(e) {
       if (!isDragging) return;
       const delta = isRight ? (startX - e.clientX) : (e.clientX - startX);
-      const minW = isRight ? 320 : 260;
-      const maxW = Math.min(window.innerWidth * 0.55, 950);
+      const is2Col = !isRight && document.querySelector('.main-container')?.classList.contains('layout-2col-left');
+      const minW = isRight ? 320 : (is2Col ? 320 : 260);
+      const maxW = Math.min(window.innerWidth * 0.70, 1200);
       const newWidth = Math.max(minW, Math.min(maxW, startWidth + delta));
 
       paneEl.style.width = newWidth + 'px';
