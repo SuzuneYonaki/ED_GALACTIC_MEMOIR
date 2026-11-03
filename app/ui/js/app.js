@@ -109,6 +109,7 @@ function updateStaticTexts() {
 
   if (typeof window.refreshAgeChips === 'function') window.refreshAgeChips();
   updateHeaderPeriodLabel();
+  updateHeaderValueDisplay();
 
   // Update language buttons
   const btnJa = document.getElementById('btn-lang-ja');
@@ -182,6 +183,65 @@ function cycleJumpUnitMode() {
   setJumpUnitMode(nextUnit);
   if (lastCachedJumpStats) {
     updateHeaderJumpStats(lastCachedJumpStats);
+  }
+}
+
+// Credits / Value Display Unit Helpers
+let lastCachedPayoutValue = 0;
+
+function getValueUnitMode() {
+  try {
+    const saved = localStorage.getItem('ed_value_unit_mode');
+    if (['raw', 'mcr', 'bcr', 'japanese'].includes(saved)) return saved;
+  } catch (e) {}
+  return 'raw';
+}
+
+function setValueUnitMode(unit) {
+  try {
+    localStorage.setItem('ed_value_unit_mode', unit);
+  } catch (e) {}
+  const sel = document.getElementById('setting-value-unit');
+  if (sel && sel.value !== unit) {
+    sel.value = unit;
+  }
+}
+
+function cycleValueUnitMode() {
+  const units = ['raw', 'mcr', 'bcr', 'japanese'];
+  const current = getValueUnitMode();
+  const nextIdx = (units.indexOf(current) + 1) % units.length;
+  const nextUnit = units[nextIdx];
+  setValueUnitMode(nextUnit);
+  updateHeaderValueDisplay();
+}
+
+function updateHeaderValueDisplay(val) {
+  if (val !== undefined && val !== null) {
+    lastCachedPayoutValue = Number(val);
+  }
+  const el = document.getElementById('stat-total-payout');
+  const container = document.getElementById('stat-payout-container');
+  if (!el) return;
+
+  const unit = getValueUnitMode();
+  const rawNum = lastCachedPayoutValue;
+  const formattedVal = (typeof formatCreditsUnit === 'function')
+    ? formatCreditsUnit(rawNum, unit)
+    : `${rawNum.toLocaleString()} Cr`;
+
+  el.innerText = formattedVal;
+
+  const rawFormatted = rawNum.toLocaleString();
+  const cycleTip = (typeof t === 'function' && t('tip_cycle_value_unit')) || '💡 クリックして単位切替 (Cr ➔ MCr ➔ BCr ➔ 億/万)';
+  const baseTip = (typeof t === 'function' && t('tip_total_payout_format', { val: formattedVal, raw: rawFormatted })) || `💰 累積探査総価値: ${formattedVal} (${rawFormatted} Cr)`;
+  const fullTip = `${baseTip}\n\n${cycleTip}`;
+
+  if (container) {
+    container.title = fullTip;
+    container.style.cursor = 'pointer';
+  } else {
+    el.title = fullTip;
   }
 }
 
@@ -295,7 +355,9 @@ async function fetchGlobalStats() {
     const bioSysCount = Number(data.bio_systems ?? 0).toLocaleString();
     const bioSigCount = Number(data.total_bio_signals ?? 0).toLocaleString();
     if (document.getElementById('stat-bio')) document.getElementById('stat-bio').innerText = `${bioSysCount} (${bioSigCount} Sig)`;
-    if (document.getElementById('stat-total-payout')) document.getElementById('stat-total-payout').innerText = formatCredits(data.total_potential_value ?? 0);
+    if (document.getElementById('stat-total-payout')) {
+      updateHeaderValueDisplay(data.total_potential_value ?? 0);
+    }
     if (data.app_version) {
       const versionEl = document.getElementById('settings-app-version');
       if (versionEl) versionEl.innerText = `v${data.app_version}`;
@@ -2591,6 +2653,16 @@ document.addEventListener('DOMContentLoaded', () => {
     jumpDistContainer.addEventListener('click', (e) => {
       e.stopPropagation();
       cycleJumpUnitMode();
+    });
+  }
+
+  // Header total payout click: cycle unit mode (Cr -> MCr -> BCr -> 万/億 Cr)
+  const payoutContainer = document.getElementById('stat-payout-container');
+  if (payoutContainer) {
+    payoutContainer.style.cursor = 'pointer';
+    payoutContainer.addEventListener('click', (e) => {
+      e.stopPropagation();
+      cycleValueUnitMode();
     });
   }
   if (typeof initSystemCardKeyboardNavigation === 'function') {
@@ -5317,6 +5389,18 @@ async function initSettingsModal() {
   updateModuleVisibilityUI();
   initLandmarkSettingsUI();
 
+  // Value Display Unit Settings in UI Tab
+  function initValueUnitSettingsUI() {
+    const sel = document.getElementById('setting-value-unit');
+    if (!sel) return;
+    sel.value = getValueUnitMode();
+    sel.addEventListener('change', () => {
+      setValueUnitMode(sel.value);
+      updateHeaderValueDisplay();
+    });
+  }
+  initValueUnitSettingsUI();
+
   // UI Color Theme Settings in UI Tab
   function initThemeSettingsUI() {
     const themeBtns = document.querySelectorAll('.theme-card-btn');
@@ -6612,6 +6696,10 @@ function initExportImportModals() {
 if (typeof window !== 'undefined') {
   window.selectSystem = selectSystem;
   window.fetchSystems = fetchSystems;
+  window.getValueUnitMode = getValueUnitMode;
+  window.setValueUnitMode = setValueUnitMode;
+  window.cycleValueUnitMode = cycleValueUnitMode;
+  window.updateHeaderValueDisplay = updateHeaderValueDisplay;
   window.fetchGlobalStats = fetchGlobalStats;
   window.renderCurrentView = renderCurrentView;
   window.getSortedBodies = getSortedBodies;

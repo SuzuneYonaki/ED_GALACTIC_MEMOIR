@@ -9,6 +9,30 @@ function formatCredits(num) {
   return Number(num).toLocaleString() + ' Cr';
 }
 
+const VALUE_DISPLAY_UNITS = ['raw', 'mcr', 'bcr', 'japanese'];
+
+function formatCreditsUnit(credits, unit = 'raw') {
+  if (credits === null || credits === undefined || isNaN(credits)) return '0 Cr';
+  const num = Number(credits);
+  switch (unit) {
+    case 'mcr':
+      return `${(num / 1e6).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} MCr`;
+    case 'bcr':
+      return `${(num / 1e9).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} BCr`;
+    case 'japanese': {
+      if (Math.abs(num) >= 1e8) {
+        return `${(num / 1e8).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}億 Cr`;
+      } else if (Math.abs(num) >= 1e4) {
+        return `${(num / 1e4).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}万 Cr`;
+      }
+      return `${num.toLocaleString()} Cr`;
+    }
+    case 'raw':
+    default:
+      return `${num.toLocaleString()} Cr`;
+  }
+}
+
 function formatKiloCredits(num) {
   if (num === null || num === undefined || isNaN(num) || Number(num) <= 0) return null;
   const val = Number(num);
@@ -512,6 +536,8 @@ if (typeof window !== 'undefined') {
   window.formatStarSpectralClass = formatStarSpectralClass;
   window.getStarTypeName = getStarTypeName;
   window.formatStellarAge = formatStellarAge;
+  window.formatCreditsUnit = formatCreditsUnit;
+  window.VALUE_DISPLAY_UNITS = VALUE_DISPLAY_UNITS;
 }
 
 if (typeof module !== 'undefined' && module.exports) {
@@ -534,7 +560,9 @@ if (typeof module !== 'undefined' && module.exports) {
     formatSolarMass,
     formatStarSpectralClass,
     getStarTypeName,
-    formatStellarAge
+    formatStellarAge,
+    formatCreditsUnit,
+    VALUE_DISPLAY_UNITS
   };
 }
 

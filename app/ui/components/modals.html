@@ -123,6 +123,24 @@
             </div>
           </div>
 
+          <!-- Credits Display Unit Preset -->
+          <div>
+            <label style="font-weight: bold; color: var(--ed-orange); font-size: 0.85rem; margin-bottom: 6px; display: block;" data-i18n="settings_value_unit_label">
+              💰 累積価値の表示単位
+            </label>
+            <div style="font-size: 0.75rem; color: var(--text-secondary); line-height: 1.5; margin-bottom: 8px;" data-i18n="settings_value_unit_desc">
+              ヘッダーの累積探査総価値の表示形式を設定します。ヘッダーの金額をクリックすることでも順次切り替えられます。
+            </div>
+            <div style="background: rgba(0,0,0,0.25); padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-color); display: flex; align-items: center; gap: 10px;">
+              <select id="setting-value-unit" class="search-input" style="flex: 1; font-size: 0.82rem; padding: 6px 10px;">
+                <option value="raw" data-i18n="value_unit_raw">Cr (全桁表示: 例 17,359,342,937 Cr)</option>
+                <option value="mcr" data-i18n="value_unit_mcr">MCr (百万単位: 例 17,359.3 MCr)</option>
+                <option value="bcr" data-i18n="value_unit_bcr">BCr (十億単位: 例 17.36 BCr)</option>
+                <option value="japanese" data-i18n="value_unit_japanese">万・億 Cr (日本語表記: 例 173.59億 Cr)</option>
+              </select>
+            </div>
+          </div>
+
           <div>
             <label style="font-weight: bold; color: var(--ed-orange); font-size: 0.85rem; margin-bottom: 6px; display: block;" data-i18n="settings_font_label">
               🖥️ 基本文字サイズ / UI表示スケール
