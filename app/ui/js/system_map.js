@@ -938,6 +938,13 @@ function createSysMapBodyElement(body, role = 'planet', systemName = '') {
     if (mapWrapper && mapWrapper._hasDragged && mapWrapper._hasDragged()) {
       return; // Suppress click when user was dragging/panning
     }
+    // Ensure latest bookmark and properties are synchronized from currentSystemData
+    if (state.currentSystemData && Array.isArray(state.currentSystemData.bodies)) {
+      const orig = state.currentSystemData.bodies.find(b => Number(b.body_id) === Number(body.body_id));
+      if (orig) {
+        body.bookmark = orig.bookmark || null;
+      }
+    }
     state.selectedBody = body;
     try {
       renderBodyInspector();
