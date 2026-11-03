@@ -196,17 +196,32 @@ function updateHeaderJumpStats(jumpStats) {
   const totalDist = Number(lastCachedJumpStats.total_jump_dist ?? 0);
   const straightDist = lastCachedJumpStats.straight_dist !== null && lastCachedJumpStats.straight_dist !== undefined ? Number(lastCachedJumpStats.straight_dist) : null;
   const jumpCount = Number(lastCachedJumpStats.jump_count ?? 0);
-  const initSys = lastCachedJumpStats.initial_system || '初期星系';
-  const curSys = lastCachedJumpStats.current_system || '現在星系';
+  const initSys = lastCachedJumpStats.initial_system || (typeof t === 'function' ? t('sys_initial_fallback') : '初期星系');
+  const curSys = lastCachedJumpStats.current_system || (typeof t === 'function' ? t('sys_current_fallback') : '現在星系');
   const unit = getJumpUnitMode();
 
   if (totalDist > 0 || straightDist !== null) {
     jumpDistEl.innerText = formatJumpDistance(totalDist, unit);
     const rawTotalFormatted = totalDist.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
-    let tip = `🚀 累計ジャンプ距離: ${formatJumpDistance(totalDist, unit)} (${rawTotalFormatted} ly / ${jumpCount.toLocaleString()} Jumps)`;
+    const formattedTotalDist = formatJumpDistance(totalDist, unit);
+    const jumpCountStr = jumpCount.toLocaleString();
+
+    let tip = (typeof t === 'function' && t('tip_total_jump_dist', {
+      dist: formattedTotalDist,
+      raw: rawTotalFormatted,
+      count: jumpCountStr
+    })) || `🚀 累計ジャンプ距離: ${formattedTotalDist} (${rawTotalFormatted} ly / ${jumpCountStr} Jumps)`;
+
     if (straightDist !== null) {
       const rawStraightFormatted = straightDist.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
-      tip += `\n📏 直線距離: ${formatJumpDistance(straightDist, unit)} (${rawStraightFormatted} ly)\n(${initSys} ➔ ${curSys})`;
+      const formattedStraightDist = formatJumpDistance(straightDist, unit);
+      const straightTip = (typeof t === 'function' && t('tip_straight_jump_dist', {
+        dist: formattedStraightDist,
+        raw: rawStraightFormatted,
+        from: initSys,
+        to: curSys
+      })) || `\n📏 直線距離: ${formattedStraightDist} (${rawStraightFormatted} ly)\n(${initSys} ➔ ${curSys})`;
+      tip += `\n${straightTip}`;
     }
     const cycleTip = t('tip_cycle_jump_unit') || '💡 クリックして単位切替 (ly ➔ kly ➔ Mly ➔ Gly)';
     tip += `\n\n${cycleTip}`;
@@ -957,9 +972,9 @@ function renderBodyExobiologyBlock(node) {
   const scannedSubtotalHtml = scannedBase > 0 ? `
     <div style="display: flex; align-items: baseline; gap: 4px; background: rgba(0, 255, 136, 0.12); padding: 1px 6px; border-radius: 3px; border: 1px solid rgba(0, 255, 136, 0.3);">
       <span style="color: #6ee7b7; font-size: 0.72rem; font-weight: 500;">✓ ${t('bio_body_scanned_total')}</span>
-      <span style="color: #d1fae5; font-size: 0.75rem;" title="スキャン確定 (通常)">${formatCredits(scannedBase)}</span>
+      <span style="color: #d1fae5; font-size: 0.75rem;" title="${(typeof t === 'function' && t('tip_scanned_payout_base')) || 'スキャン確定 (通常)'}">${formatCredits(scannedBase)}</span>
       <span style="color: var(--text-secondary); font-size: 0.65rem;">/ 1st:</span>
-      <span style="color: var(--ed-green); font-size: 0.78rem; font-weight: bold;" title="スキャン確定 (1st 5倍)">${formatCredits(scannedFirst)}</span>
+      <span style="color: var(--ed-green); font-size: 0.78rem; font-weight: bold;" title="${(typeof t === 'function' && t('tip_scanned_payout_first')) || 'スキャン確定 (1st 5倍)'}">${formatCredits(scannedFirst)}</span>
     </div>
   ` : '';
 
@@ -974,9 +989,9 @@ function renderBodyExobiologyBlock(node) {
           ${scannedSubtotalHtml}
           <div style="display: flex; align-items: baseline; gap: 4px;">
             <span style="color: var(--text-secondary); font-size: 0.72rem;">${t('bio_body_total')}</span>
-            <span style="color: #a7f3d0; font-size: 0.75rem;" title="見込合計 (通常)">${formatCredits(totalBase)}</span>
+            <span style="color: #a7f3d0; font-size: 0.75rem;" title="${(typeof t === 'function' && t('tip_total_payout_base')) || '見込合計 (通常)'}">${formatCredits(totalBase)}</span>
             <span style="color: var(--text-secondary); font-size: 0.65rem;">/ 1st:</span>
-            <span style="color: var(--ed-green); font-weight: bold; font-size: 0.8rem;" title="1st Discover合計 (5倍)">${formatCredits(totalFirst)}</span>
+            <span style="color: var(--ed-green); font-weight: bold; font-size: 0.8rem;" title="${(typeof t === 'function' && t('tip_total_payout_first')) || '1st Discover合計 (5倍)'}">${formatCredits(totalFirst)}</span>
           </div>
         </div>
       </div>
@@ -1709,7 +1724,7 @@ async function renderPhysicsReport(container, systemData) {
           <div class="physics-score-number" style="color: ${rGlowColor};">
             ${rScore.toFixed(1)}<span style="font-size: 1rem; color: var(--text-secondary); font-weight: normal;"> / 100</span>
           </div>
-          <button id="btn-re-eval-physics" class="btn-icon" style="background: rgba(0, 210, 255, 0.12); border: 1px solid var(--ed-cyan); color: var(--ed-cyan); border-radius: 4px; padding: 4px 8px; cursor: pointer;" title="天体物理評価を再計算">
+          <button id="btn-re-eval-physics" class="btn-icon" style="background: rgba(0, 210, 255, 0.12); border: 1px solid var(--ed-cyan); color: var(--ed-cyan); border-radius: 4px; padding: 4px 8px; cursor: pointer;" title="${(typeof t === 'function' && t('tip_recalc_physics')) || '天体物理評価を再計算'}">
             🔄
           </button>
         </div>
@@ -1902,11 +1917,11 @@ function renderFlatBodiesList(container, bodies) {
     if (body.star_type) {
       const lum = (body.luminosity || '').trim();
       if (lum) {
-        badges.push(`<span class="tag-badge" style="background: rgba(251, 146, 60, 0.2); color: #fb923c; border: 1px solid rgba(251, 146, 60, 0.5); font-weight: bold;" title="光度階級 (Luminosity Class): ${lum}">🌟 ${lum}</span>`);
+        badges.push(`<span class="tag-badge" style="background: rgba(251, 146, 60, 0.2); color: #fb923c; border: 1px solid rgba(251, 146, 60, 0.5); font-weight: bold;" title="${(typeof t === 'function' && t('tip_luminosity_class', { lum })) || ('光度階級 (Luminosity Class): ' + lum)}">🌟 ${lum}</span>`);
       }
       if (body.absolute_magnitude !== null && body.absolute_magnitude !== undefined) {
         const magVal = Number(body.absolute_magnitude).toFixed(1);
-        badges.push(`<span class="tag-badge" style="background: rgba(234, 179, 8, 0.15); color: #fde047; border: 1px solid rgba(234, 179, 8, 0.4);" title="絶対等級 (Absolute Magnitude): ${magVal} Mag">✨ ${magVal} Mag</span>`);
+        badges.push(`<span class="tag-badge" style="background: rgba(234, 179, 8, 0.15); color: #fde047; border: 1px solid rgba(234, 179, 8, 0.4);" title="${(typeof t === 'function' && t('tip_absolute_magnitude', { mag: magVal })) || ('絶対等級 (Absolute Magnitude): ' + magVal + ' Mag')}">✨ ${magVal} Mag</span>`);
       }
     }
     let bRings = body.rings_list;
@@ -2777,24 +2792,24 @@ document.addEventListener('DOMContentLoaded', () => {
       const inara = services.inara || {};
 
       const edsmBadge = `
-        <a href="${edsm.url || '#'}" target="_blank" rel="noopener" class="external-service-badge ${edsm.found ? 'hit' : 'miss'}" title="${edsm.found ? (edsm.details || 'EDSM登録済') : 'EDSM未登録'}">
+        <a href="${edsm.url || '#'}" target="_blank" rel="noopener" class="external-service-badge ${edsm.found ? 'hit' : 'miss'}" title="${edsm.found ? (edsm.details || (typeof t === 'function' ? t('external_edsm_registered') : 'EDSM登録済')) : (typeof t === 'function' ? t('external_edsm_unregistered') : 'EDSM未登録')}">
           EDSM ${edsm.found ? '✓' : '✕'}
         </a>
       `;
       const spanshBadge = `
-        <a href="${spansh.url || '#'}" target="_blank" rel="noopener" class="external-service-badge ${spansh.found ? 'hit' : 'miss'}" title="${spansh.found ? (spansh.details || 'Spansh登録済') : 'Spansh未登録'}">
+        <a href="${spansh.url || '#'}" target="_blank" rel="noopener" class="external-service-badge ${spansh.found ? 'hit' : 'miss'}" title="${spansh.found ? (spansh.details || (typeof t === 'function' ? t('external_spansh_registered') : 'Spansh登録済')) : (typeof t === 'function' ? t('external_spansh_unregistered') : 'Spansh未登録')}">
           Spansh ${spansh.found ? '✓' : '✕'}
         </a>
       `;
       const inaraBadge = `
-        <a href="${inara.url || '#'}" target="_blank" rel="noopener" class="external-service-badge ${inara.found ? 'hit' : 'miss'}" title="${inara.found ? 'Inara登録済' : 'Inara未登録'}">
+        <a href="${inara.url || '#'}" target="_blank" rel="noopener" class="external-service-badge ${inara.found ? 'hit' : 'miss'}" title="${inara.found ? (typeof t === 'function' ? t('external_inara_registered') : 'Inara登録済') : (typeof t === 'function' ? t('external_inara_unregistered') : 'Inara未登録')}">
           Inara ${inara.found ? '✓' : '✕'}
         </a>
       `;
 
       const loadBtnHtml = edsm.found ? `
         <div style="margin-top: 6px; padding-top: 6px; border-top: 1px dashed rgba(56, 189, 248, 0.3); display: flex; justify-content: flex-end;">
-          <button id="btn-import-external-edsm" class="btn-primary" style="background: rgba(56, 189, 248, 0.18); border: 1px solid #38bdf8; color: #38bdf8; padding: 3px 8px; border-radius: 4px; font-size: 0.72rem; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;" title="未訪問星系ですが、EDSMの星系・天体データを取得してSystem Mapや天体リストで閲覧可能にします（Web共有/パッケージ書き出しは利用不可）">
+          <button id="btn-import-external-edsm" class="btn-primary" style="background: rgba(56, 189, 248, 0.18); border: 1px solid #38bdf8; color: #38bdf8; padding: 3px 8px; border-radius: 4px; font-size: 0.72rem; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;" title="${(typeof t === 'function' && t('tip_import_external_edsm')) || '未訪問星系ですが、EDSMの星系・天体データを取得してSystem Mapや天体リストで閲覧可能にします（Web共有/パッケージ書き出しは利用不可）'}">
             <span>🚀 EDSMから星系データをロード（未訪問参照）</span>
           </button>
         </div>
@@ -3139,7 +3154,8 @@ document.addEventListener('DOMContentLoaded', () => {
         e.stopPropagation();
         showFilterCountPopover(chip, filterKey);
       });
-      chip.setAttribute('title', `${chip.getAttribute('title') || ''} (右クリック/長押しで個数指定)`.trim());
+      const hintSuffix = (typeof t === 'function' && t('tip_chip_count_filter_hint')) || '(右クリック/長押しで個数指定)';
+        chip.setAttribute('title', `${chip.getAttribute('title') || ''} ${hintSuffix}`.trim());
     }
   });
 
@@ -3278,7 +3294,8 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     });
 
-    chip.setAttribute('title', `${chip.getAttribute('title') || ''} (右クリック/長押しで個数指定)`.trim());
+    const hintSuffix = (typeof t === 'function' && t('tip_chip_count_filter_hint')) || '(右クリック/長押しで個数指定)';
+        chip.setAttribute('title', `${chip.getAttribute('title') || ''} ${hintSuffix}`.trim());
   });
 
   // Celestial Match Mode Radio (AND vs OR)
@@ -6656,7 +6673,7 @@ function initGalacticExtremes() {
           const dateStr = item.last_visited ? item.last_visited.replace('T', ' ').substring(0, 16) : '--';
           const visitText = `${item.visit_count || 1}回`;
           html += `
-            <div class="extreme-card" style="background: rgba(15, 23, 42, 0.7); border: 1px solid ${d.border}; border-radius: 6px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; cursor: pointer; transition: all 0.2s ease; position: relative;" data-sys-addr="${item.system_address}" title="${sysName} を表示">
+            <div class="extreme-card" style="background: rgba(15, 23, 42, 0.7); border: 1px solid ${d.border}; border-radius: 6px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; cursor: pointer; transition: all 0.2s ease; position: relative;" data-sys-addr="${item.system_address}" title="${(typeof t === 'function' && t('tip_show_extreme_system', { sys: sysName })) || (sysName + ' を表示')}">
               <div style="display: flex; align-items: center; justify-content: space-between; gap: 6px;">
                 <span style="font-weight: bold; font-size: 0.8rem; color: #fff; display: flex; align-items: center; gap: 5px;">
                   <span>${d.icon}</span> ${d.title}
