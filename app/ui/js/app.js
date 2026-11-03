@@ -485,11 +485,16 @@ async function selectSystem(systemAddress, preserveSelectedBody = false, resetJu
     
     // Auto select target body, preserved body, or first body
     if (data.bodies && data.bodies.length > 0) {
-      if (preserveSelectedBody && state.selectedBody) {
-        const matchingBody = data.bodies.find(b => b.body_id === state.selectedBody.body_id);
+      const isSameSystem = state.selectedSystem && Number(state.selectedSystem.system_address) === Number(systemAddress);
+      const shouldPreserve = preserveSelectedBody || (isSameSystem && Boolean(state.selectedBody));
+
+      if (shouldPreserve && state.selectedBody) {
+        const selBodyId = Number(state.selectedBody.body_id);
+        const matchingBody = data.bodies.find(b => Number(b.body_id) === selBodyId);
         state.selectedBody = matchingBody || data.bodies[0];
       } else if (state.targetBodyId !== null && state.targetBodyId !== undefined) {
-        const targetMatching = data.bodies.find(b => b.body_id === state.targetBodyId);
+        const targetId = Number(state.targetBodyId);
+        const targetMatching = data.bodies.find(b => Number(b.body_id) === targetId);
         state.selectedBody = targetMatching || data.bodies[0];
       } else {
         state.selectedBody = data.bodies[0];

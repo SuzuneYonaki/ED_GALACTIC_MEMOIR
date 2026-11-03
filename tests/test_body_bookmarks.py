@@ -173,3 +173,73 @@ def test_inspector_js_bookmark_draft_preservation():
     assert "draftKey" in code, "Must compute draftKey based on system and body"
     assert "activeDraft.note_markdown" in code, "Must preserve draft note"
     assert "delete window._bookmarkDrafts[draftKey]" in code, "Must clean up draft on save and delete"
+
+
+def test_multiple_planets_independent_bookmarks():
+    """Verify that multiple planetary bodies in the same system retain independent bookmarks."""
+    # 1. Bookmark Planet 1 (Colonia 1 A)
+    client.post("/api/bookmark", json={
+        "system_address": 1001,
+        "body_id": 1,
+        "body_name": "Colonia 1 A",
+        "star_system": "Colonia 1",
+        "alias_name": "Outpost Alpha",
+        "note_markdown": "Colonia 1 A Note - High Metal Content"
+    })
+
+    # 2. Bookmark Planet 2 (Colonia 1 B)
+    client.post("/api/bookmark", json={
+        "system_address": 1001,
+        "body_id": 2,
+        "body_name": "Colonia 1 B",
+        "star_system": "Colonia 1",
+        "alias_name": "Ice Station Zero",
+        "note_markdown": "Colonia 1 B Note - Icy Body"
+    })
+
+    # 3. Retrieve system detail and check independent binding
+    res = client.get("/api/system/1001")
+    assert res.status_code == 200
+    data = res.json()
+    b1 = next(b for b in data["bodies"] if b["body_id"] == 1)
+    b2 = next(b for b in data["bodies"] if b["body_id"] == 2)
+    assert b1["bookmark"] is not None
+    assert b1["bookmark"]["alias_name"] == "Outpost Alpha"
+    assert "High Metal Content" in b1["bookmark"]["note_markdown"]
+
+    assert b2["bookmark"] is not None
+    assert b2["bookmark"]["alias_name"] == "Ice Station Zero"
+    assert "Icy Body" in b2["bookmark"]["note_markdown"]
+
+    # 4. Delete Planet 1 bookmark; Planet 2 must remain unaffected
+    del_res = client.delete("/api/bookmark/1001/1")
+    assert del_res.status_code == 200
+
+    res_after = client.get("/api/system/1001")
+    data_after = res_after.json()
+    b1_after = next(b for b in data_after["bodies"] if b["body_id"] == 1)
+    b2_after = next(b for b in data_after["bodies"] if b["body_id"] == 2)
+    assert b1_after["bookmark"] is None
+    assert b2_after["bookmark"] is not None
+    assert b2_after["bookmark"]["alias_name"] == "Ice Station Zero"
+
+
+def test_frontend_sync_and_persistence_guards():
+    """Verify frontend JavaScript files contain body-switching guards and data synchronization."""
+    import pathlib
+    base_dir = pathlib.Path(__file__).resolve().parent.parent / "app" / "ui" / "js"
+
+    # inspector.js verification
+    insp_code = (base_dir / "inspector.js").read_text(encoding="utf-8")
+    assert "_currentInspectedBodyKey" in insp_code, "inspector.js must track _currentInspectedBodyKey"
+    assert "isNewBodyInspected" in insp_code, "inspector.js must detect celestial body transitions"
+    assert "matchingBody.bookmark = payload" in insp_code, "inspector.js must sync payload into currentSystemData.bodies"
+
+    # system_map.js verification
+    sysmap_code = (base_dir / "system_map.js").read_text(encoding="utf-8")
+    assert "orig.bookmark" in sysmap_code, "system_map.js must synchronize bookmark on body card click"
+
+    # app.js verification
+    app_code = (base_dir / "app.js").read_text(encoding="utf-8")
+    assert "Number(b.body_id) === selBodyId" in app_code, "app.js must strictly match body_id numerically"
+    assert "shouldPreserve" in app_code, "app.js must preserve selected body on same-system refreshes"

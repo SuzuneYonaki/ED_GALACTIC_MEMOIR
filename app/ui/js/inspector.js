@@ -221,6 +221,22 @@ function renderBodyInspector() {
     const draftKey = `${sysAddr}_${b.body_id}`;
     const activeDraft = window._bookmarkDrafts[draftKey] || null;
 
+    // Detect if inspected celestial body changed (force focus blur & load new body's data)
+    const isNewBodyInspected = window._currentInspectedBodyKey !== draftKey;
+    if (isNewBodyInspected) {
+      window._currentInspectedBodyKey = draftKey;
+      if (bmAliasInput && document.activeElement === bmAliasInput) bmAliasInput.blur();
+      if (bmNoteInput && document.activeElement === bmNoteInput) bmNoteInput.blur();
+    }
+
+    // Ensure b.bookmark is kept strictly up-to-date from currentSystemData.bodies
+    if (!b.bookmark && state.currentSystemData && Array.isArray(state.currentSystemData.bodies)) {
+      const origBody = state.currentSystemData.bodies.find(x => Number(x.body_id) === Number(b.body_id));
+      if (origBody && origBody.bookmark) {
+        b.bookmark = origBody.bookmark;
+      }
+    }
+
     const isBookmarked = Boolean(b.bookmark);
     if (isBookmarked) {
       if (inspectBmIcon) inspectBmIcon.innerText = '★';
@@ -232,12 +248,12 @@ function renderBodyInspector() {
       if (bmStatusIndicator) bmStatusIndicator.style.display = 'inline-block';
       if (btnBmDelete) btnBmDelete.style.display = 'inline-block';
 
-      const isAliasFocused = bmAliasInput && document.activeElement === bmAliasInput;
+      const isAliasFocused = !isNewBodyInspected && bmAliasInput && document.activeElement === bmAliasInput;
       if (bmAliasInput && !isAliasFocused) {
         bmAliasInput.value = (activeDraft && activeDraft.alias_name !== undefined) ? activeDraft.alias_name : (b.bookmark.alias_name || '');
       }
 
-      const isNoteFocused = bmNoteInput && document.activeElement === bmNoteInput;
+      const isNoteFocused = !isNewBodyInspected && bmNoteInput && document.activeElement === bmNoteInput;
       if (bmNoteInput && !isNoteFocused) {
         bmNoteInput.value = (activeDraft && activeDraft.note_markdown !== undefined) ? activeDraft.note_markdown : (b.bookmark.note_markdown || '');
       }
@@ -267,12 +283,12 @@ function renderBodyInspector() {
       if (bmStatusIndicator) bmStatusIndicator.style.display = 'none';
       if (btnBmDelete) btnBmDelete.style.display = 'none';
 
-      const isAliasFocused = bmAliasInput && document.activeElement === bmAliasInput;
+      const isAliasFocused = !isNewBodyInspected && bmAliasInput && document.activeElement === bmAliasInput;
       if (bmAliasInput && !isAliasFocused) {
         bmAliasInput.value = (activeDraft && activeDraft.alias_name !== undefined) ? activeDraft.alias_name : '';
       }
 
-      const isNoteFocused = bmNoteInput && document.activeElement === bmNoteInput;
+      const isNoteFocused = !isNewBodyInspected && bmNoteInput && document.activeElement === bmNoteInput;
       if (bmNoteInput && !isNoteFocused) {
         bmNoteInput.value = (activeDraft && activeDraft.note_markdown !== undefined) ? activeDraft.note_markdown : '';
       }
@@ -371,14 +387,27 @@ function renderBodyInspector() {
       btnBmSave.onclick = async () => {
         const curSys = state.currentSystemData ? state.currentSystemData.system : state.selectedSystem;
         if (!curSys || !b) return;
+
+        const sysAddrNum = Number(curSys.system_address || b.system_address);
+        const bodyIdNum = Number(b.body_id);
+        if (isNaN(sysAddrNum) || isNaN(bodyIdNum)) {
+          console.warn('Cannot save bookmark: invalid system_address or body_id', { curSys, b });
+          return;
+        }
+
+        const noteText = bmNoteInput ? bmNoteInput.value : '';
+        const aliasText = bmAliasInput ? bmAliasInput.value.trim() : '';
+
         const payload = {
-          system_address: curSys.system_address,
-          body_id: b.body_id,
-          body_name: b.body_name,
-          star_system: curSys.star_system,
-          alias_name: (bmAliasInput ? bmAliasInput.value.trim() : ''),
-          note_markdown: (bmNoteInput ? bmNoteInput.value : '')
+          system_address: sysAddrNum,
+          body_id: bodyIdNum,
+          body_name: b.body_name || '',
+          star_system: curSys.star_system || b.star_system || '',
+          alias_name: aliasText,
+          note_markdown: noteText
         };
+
+        const originalBtnText = btnBmSave.innerText;
         try {
           btnBmSave.disabled = true;
           const res = await fetch('/api/bookmark', {
@@ -387,16 +416,30 @@ function renderBodyInspector() {
             body: JSON.stringify(payload)
           });
           btnBmSave.disabled = false;
+
           if (res.ok) {
             b.bookmark = payload;
+            if (state.selectedBody && Number(state.selectedBody.body_id) === bodyIdNum) {
+              state.selectedBody.bookmark = payload;
+            }
+
+            // Strictly synchronize with currentSystemData bodies array
+            if (state.currentSystemData && Array.isArray(state.currentSystemData.bodies)) {
+              const matchingBody = state.currentSystemData.bodies.find(x => Number(x.body_id) === bodyIdNum);
+              if (matchingBody) {
+                matchingBody.bookmark = payload;
+              }
+            }
+
             if (window._bookmarkDrafts) {
               delete window._bookmarkDrafts[draftKey];
             }
+
             if (curSys) {
               if (!curSys.bookmarks) curSys.bookmarks = [];
-              const existIdx = curSys.bookmarks.findIndex(x => x.body_id === b.body_id);
+              const existIdx = curSys.bookmarks.findIndex(x => Number(x.body_id) === bodyIdNum);
               const bmObj = {
-                body_id: b.body_id,
+                body_id: bodyIdNum,
                 body_name: b.body_name,
                 alias_name: payload.alias_name,
                 has_note: Boolean(payload.note_markdown.trim()),
@@ -405,13 +448,42 @@ function renderBodyInspector() {
               if (existIdx >= 0) curSys.bookmarks[existIdx] = bmObj;
               else curSys.bookmarks.push(bmObj);
             }
+
+            // Visual save feedback
+            btnBmSave.innerText = (typeof getAppLang === 'function' && getAppLang() === 'en') ? '✓ Saved' : '✓ 保存完了';
+            btnBmSave.style.background = 'var(--ed-green, #00ff88)';
+            btnBmSave.style.color = '#000';
+            setTimeout(() => {
+              btnBmSave.innerText = originalBtnText;
+              btnBmSave.style.background = '';
+              btnBmSave.style.color = '';
+            }, 1500);
+
             renderBodyInspector();
             renderCurrentView();
             renderSystemList();
+          } else {
+            console.error('Failed to save bookmark, HTTP status:', res.status);
+            btnBmSave.innerText = (typeof getAppLang === 'function' && getAppLang() === 'en') ? '⚠ Save Failed' : '⚠ 保存失敗';
+            btnBmSave.style.background = 'var(--ed-red, #ff3344)';
+            btnBmSave.style.color = '#fff';
+            setTimeout(() => {
+              btnBmSave.innerText = originalBtnText;
+              btnBmSave.style.background = '';
+              btnBmSave.style.color = '';
+            }, 2000);
           }
         } catch (e) {
           btnBmSave.disabled = false;
           console.error('Failed to save bookmark:', e);
+          btnBmSave.innerText = (typeof getAppLang === 'function' && getAppLang() === 'en') ? '⚠ Save Error' : '⚠ エラー';
+          btnBmSave.style.background = 'var(--ed-red, #ff3344)';
+          btnBmSave.style.color = '#fff';
+          setTimeout(() => {
+            btnBmSave.innerText = originalBtnText;
+            btnBmSave.style.background = '';
+            btnBmSave.style.color = '';
+          }, 2000);
         }
       };
     }
@@ -421,21 +493,38 @@ function renderBodyInspector() {
       btnBmDelete.onclick = async () => {
         const curSys = state.currentSystemData ? state.currentSystemData.system : state.selectedSystem;
         if (!curSys || !b) return;
+
+        const sysAddrNum = Number(curSys.system_address || b.system_address);
+        const bodyIdNum = Number(b.body_id);
+        if (isNaN(sysAddrNum) || isNaN(bodyIdNum)) return;
+
         try {
           btnBmDelete.disabled = true;
-          const res = await fetch(`/api/bookmark/${curSys.system_address}/${b.body_id}`, {
+          const res = await fetch(`/api/bookmark/${sysAddrNum}/${bodyIdNum}`, {
             method: 'DELETE'
           });
           btnBmDelete.disabled = false;
           if (res.ok) {
             b.bookmark = null;
+            if (state.selectedBody && Number(state.selectedBody.body_id) === bodyIdNum) {
+              state.selectedBody.bookmark = null;
+            }
+
+            // Strictly synchronize with currentSystemData bodies array
+            if (state.currentSystemData && Array.isArray(state.currentSystemData.bodies)) {
+              const matchingBody = state.currentSystemData.bodies.find(x => Number(x.body_id) === bodyIdNum);
+              if (matchingBody) {
+                matchingBody.bookmark = null;
+              }
+            }
+
             if (window._bookmarkDrafts) {
               delete window._bookmarkDrafts[draftKey];
             }
             if (bmAliasInput) bmAliasInput.value = '';
             if (bmNoteInput) bmNoteInput.value = '';
             if (curSys && curSys.bookmarks) {
-              curSys.bookmarks = curSys.bookmarks.filter(x => x.body_id !== b.body_id);
+              curSys.bookmarks = curSys.bookmarks.filter(x => Number(x.body_id) !== bodyIdNum);
             }
             renderBodyInspector();
             renderCurrentView();
@@ -1533,7 +1622,7 @@ if (typeof window !== 'undefined') {
 function initInspectorNotesAccordion() {
   const bmSection = document.getElementById('section-bookmark');
   const bmHeader = document.getElementById('bm-section-header');
-  if (!bmSection || !bmHeader) return;
+  if (!bmSection || !bmHeader || typeof bmHeader.addEventListener !== 'function') return;
 
   // Restore saved collapse state
   try {
