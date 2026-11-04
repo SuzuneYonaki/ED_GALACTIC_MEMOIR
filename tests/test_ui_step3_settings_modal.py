@@ -29,6 +29,17 @@ class TestUIStep3SettingsModal(unittest.TestCase):
         self.assertIn('id="tab-btn-addons"', content)
         self.assertIn('id="tab-btn-credits"', content)
 
+    def test_settings_modal_header_language_switcher(self):
+        modals_path = self.root / "app" / "ui" / "components" / "modals.html"
+        content = modals_path.read_text(encoding="utf-8")
+        self.assertIn('id="btn-modal-header-lang-ja"', content)
+        self.assertIn('id="btn-modal-header-lang-en"', content)
+
+        app_js_path = self.root / "app" / "ui" / "js" / "app.js"
+        app_js = app_js_path.read_text(encoding="utf-8")
+        self.assertIn("btn-modal-header-lang-ja", app_js)
+        self.assertIn("btn-modal-header-lang-en", app_js)
+
 
 if __name__ == "__main__":
     unittest.main()

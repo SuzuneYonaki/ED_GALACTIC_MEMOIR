@@ -124,6 +124,12 @@ function updateStaticTexts() {
     modalBtnJa.classList.toggle('active', currentLang === 'ja');
     modalBtnEn.classList.toggle('active', currentLang === 'en');
   }
+  const modalHeaderBtnJa = document.getElementById('btn-modal-header-lang-ja');
+  const modalHeaderBtnEn = document.getElementById('btn-modal-header-lang-en');
+  if (modalHeaderBtnJa && modalHeaderBtnEn) {
+    modalHeaderBtnJa.classList.toggle('active', currentLang === 'ja');
+    modalHeaderBtnEn.classList.toggle('active', currentLang === 'en');
+  }
 
   // Update layout toggle text
   const layoutToggleText = document.getElementById('layout-toggle-text');
@@ -2685,6 +2691,8 @@ document.addEventListener('DOMContentLoaded', () => {
   // Language Switchers (Settings Modal)
   document.getElementById('btn-modal-lang-ja')?.addEventListener('click', () => setLanguage('ja'));
   document.getElementById('btn-modal-lang-en')?.addEventListener('click', () => setLanguage('en'));
+  document.getElementById('btn-modal-header-lang-ja')?.addEventListener('click', () => setLanguage('ja'));
+  document.getElementById('btn-modal-header-lang-en')?.addEventListener('click', () => setLanguage('en'));
 
   // After an EDSM load, a ringed system gets a button to fetch ring hotspots from Spansh. Nothing is
   // requested until the user presses it.
