@@ -119,7 +119,12 @@
     </div>
 
     <div class="header-actions">
-      <!-- Manual Log Rescan Button (Instant access without opening settings) -->
+      <!-- Language Switcher (Placed directly to the left of Galactic Reach) -->
+      <div class="lang-switch-group" style="display: flex; gap: 2px; background: var(--bg-card); padding: 2px; border-radius: 4px; border: 1px solid var(--border-color); flex-shrink: 0;" data-i18n-title="tip_lang_switch" title="言語切替 / Language Switch">
+        <button id="btn-lang-ja" class="view-btn active" style="padding: 3px 6px; font-size: 0.72rem;" data-i18n-title="tip_modal_header_lang_ja" title="日本語に切り替え">JP</button>
+        <button id="btn-lang-en" class="view-btn" style="padding: 3px 6px; font-size: 0.72rem;" data-i18n-title="tip_modal_header_lang_en" title="Switch to English">EN</button>
+      </div>
+
       <!-- Galactic Reach Modal Button -->
       <button id="btn-open-extremes" class="view-btn" style="padding: 4px 9px; font-size: 0.76rem; color: #a5f3fc; background: rgba(0, 210, 255, 0.12); border: 1px solid rgba(0, 210, 255, 0.4); display: flex; align-items: center; gap: 4px; cursor: pointer; flex-shrink: 0; font-weight: bold; border-radius: 4px;" data-i18n-title="tip_galactic_extremes" title="🌌 旅の到達点・最遠境界記録（北端・南端・東端・西端・天頂・天底）">
         <span>🌌</span>
@@ -156,12 +161,6 @@
         <span id="layout-toggle-icon">◫</span>
         <span id="layout-toggle-text" data-i18n="btn_layout_2col">2列表示</span>
       </button>
-
-      <!-- Language Switcher -->
-      <div class="lang-switch-group" style="display: flex; gap: 2px; background: var(--bg-card); padding: 2px; border-radius: 4px; border: 1px solid var(--border-color); flex-shrink: 0;">
-        <button id="btn-lang-ja" class="view-btn active" style="padding: 3px 6px; font-size: 0.72rem;">JP</button>
-        <button id="btn-lang-en" class="view-btn" style="padding: 3px 6px; font-size: 0.72rem;">EN</button>
-      </div>
     </div>
   </header>
 

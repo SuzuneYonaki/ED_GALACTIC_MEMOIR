@@ -1,11 +1,18 @@
   <!-- Unified Settings Modal (Tabs: Logs / TTS / Credits) -->
   <div id="settings-modal" class="modal-overlay" style="display: none;">
     <div class="modal-content" style="max-width: 620px; display: flex; flex-direction: column;">
-      <div class="modal-header">
-        <h3 style="color: var(--text-primary); display: flex; align-items: center; gap: 8px;" data-i18n="settings_title">
+      <div class="modal-header" style="display: flex; justify-content: space-between; align-items: center;">
+        <h3 style="color: var(--text-primary); display: flex; align-items: center; gap: 8px; margin: 0;" data-i18n="settings_title">
           ⚙️ 設定 & ログ同期 & 謝辞
         </h3>
-        <button id="btn-settings-close" class="modal-close-btn">&times;</button>
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <!-- Settings Modal Header Language Switcher (JP / EN Caption Toggle) -->
+          <div class="lang-switch-group" style="display: flex; gap: 2px; background: var(--bg-card); padding: 2px; border-radius: 4px; border: 1px solid var(--border-color); flex-shrink: 0;" data-i18n-title="tip_lang_switch" title="言語切替 / Language Switch">
+            <button type="button" id="btn-modal-header-lang-ja" class="view-btn active" style="padding: 2px 7px; font-size: 0.72rem; font-weight: bold; line-height: 1.2;" data-i18n-title="tip_modal_header_lang_ja" title="日本語に切り替え">JP</button>
+            <button type="button" id="btn-modal-header-lang-en" class="view-btn" style="padding: 2px 7px; font-size: 0.72rem; font-weight: bold; line-height: 1.2;" data-i18n-title="tip_modal_header_lang_en" title="Switch to English">EN</button>
+          </div>
+          <button id="btn-settings-close" class="modal-close-btn">&times;</button>
+        </div>
       </div>
 
       <!-- Settings Tabs Header -->
