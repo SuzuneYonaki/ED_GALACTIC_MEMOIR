@@ -143,6 +143,35 @@ cd ED_GALACTIC_MEMOIR
 pip install -r requirements.txt
 python run.py
 ```
+---
+
+### 🔒 セキュリティ保証 & ウイルス検証 (Security & Integrity)
+
+本プロジェクトは、大切なゲームデータとローカル環境を保護するため、厳格なセキュリティテストおよびウイルス検疫を実施しています。
+
+#### 1. 🛡️ ペネトレーション（脆弱性）テスト
+自動テストスイート（`tests/test_penetration_security.py`）により、以下の攻撃耐性を常時検証しています：
+- **SQLインジェクション保護**: ジャーナル内の悪意ある文字列や引用符混入による不正クエリを完全遮断。
+- **パストラバーサル防御**: `..\..\` 等の不正な相対パスや環境変数をサニタイズし、許可領域外へのファイルアクセスを防止。
+- **XSS（クロスサイトスクリプティング）防止**: 天体名やMarkdownメモに含まれるHTML/スクリプトタグのエスケープ処理。
+- **DoS（サービス不能化）耐性**: 100万文字を超える巨大ペイロードや極端な異常値に対する入力長制限・フェイルセーフ。
+
+#### 2. 🦠 アンチウイルス検疫 & チェックサム
+配布用バイナリおよびZIPアーカイブは、最新定義のアンチウイルスによる検査を実施済みです：
+
+- **ローカル検疫**: Microsoft Defender (`MpCmdRun.exe`) によるフルスキャン完了（**脅威ゼロ / Clean**）
+- **完全性検証用 SHA-256 チェックサム (v0.9.0)**:
+  ```text
+  ED_GALACTIC_MEMOIR.exe:
+  e7fbe9cc35ad2db14dbe6aaed85265b224fa94b236291afc9ff6c58f176b2ebe
+
+  ED_GALACTIC_MEMOIR.zip:
+  f9d5c03282df483ea00be50ba789be23b78fddaa8ad694b60f85183c0be7ff7d
+  ```
+
+#### 3. 🌐 VirusTotal による多重エンジン検証（推奨・無料）
+ダウンロードしたファイルに不安がある場合、Googleが運営する世界最高峰の無料マルチアンチウイルス検査プラットフォーム **[VirusTotal](https://www.virustotal.com/)** にファイルをドラッグ＆ドロップして検査することをお勧めします。
+- Microsoft Defender, Kaspersky, Symantec, CrowdStrike, ESET, Sophos 等を含む **70社以上の商用エンジン** で一括検査され、安全性を即座に客観確認できます。
 
 ---
 
@@ -244,6 +273,35 @@ cd ED_GALACTIC_MEMOIR
 pip install -r requirements.txt
 python run.py
 ```
+---
+
+### 🔒 Security Assurance & Virus Verification
+
+To ensure complete safety for your local environment and game data, this project adheres to rigorous automated penetration testing and malware verification.
+
+#### 1. 🛡️ Automated Penetration Testing
+Verified by continuous automated security tests (`tests/test_penetration_security.py`):
+- **SQL Injection Prevention**: Safely parameterizes all database queries, neutralizing malicious payloads or unescaped quotes in logs.
+- **Path Traversal Defense**: Sanitizes file paths and prevents directory climbing outside designated workspace boundaries.
+- **XSS Protection**: Automatically escapes HTML tags and script elements in system names, aliases, and Markdown notes.
+- **DoS Safeguards**: Rejects excessively oversized inputs (>1,000,000 characters) and extreme anomalous values.
+
+#### 2. 🦠 Antivirus Quarantine & Official SHA-256 Checksums
+All pre-built binaries and archive packages are scanned prior to release:
+
+- **Local Quarantine**: Full scan passed via Microsoft Defender (`MpCmdRun.exe`) with **Zero Threats Found (Clean)**.
+- **Official SHA-256 Checksums (v0.9.0)**:
+  ```text
+  ED_GALACTIC_MEMOIR.exe:
+  e7fbe9cc35ad2db14dbe6aaed85265b224fa94b236291afc9ff6c58f176b2ebe
+
+  ED_GALACTIC_MEMOIR.zip:
+  f9d5c03282df483ea00be50ba789be23b78fddaa8ad694b60f85183c0be7ff7d
+  ```
+
+#### 3. 🌐 Multi-Engine Verification via VirusTotal (Free & Highly Trusted)
+If you wish to independently verify the safety of the downloaded binary, we encourage uploading it to **[VirusTotal](https://www.virustotal.com/)** (powered by Google).
+- VirusTotal aggregates **over 70 top commercial antivirus engines** (Microsoft, Kaspersky, Symantec, CrowdStrike, ESET, Sophos, etc.) for instant, completely free, multi-engine verification.
 
 ---
 
