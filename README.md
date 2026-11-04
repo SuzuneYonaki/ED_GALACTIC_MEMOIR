@@ -163,10 +163,10 @@ python run.py
 - **完全性検証用 SHA-256 チェックサム (v0.9.0)**:
   ```text
   ED_GALACTIC_MEMOIR.exe:
-  e7fbe9cc35ad2db14dbe6aaed85265b224fa94b236291afc9ff6c58f176b2ebe
+  b48368ecc6b8836f70c413bbaa8aa36da9986ee0f795829c2e161d2cb57a5b7c
 
   ED_GALACTIC_MEMOIR.zip:
-  f9d5c03282df483ea00be50ba789be23b78fddaa8ad694b60f85183c0be7ff7d
+  4061b227bd3c0159e18a03f493689211c5eca9fd5bc6fd0e5d2b6e7b03b0377f
   ```
 
 #### 3. 🌐 VirusTotal による多重エンジン検証（推奨・無料）
@@ -293,10 +293,10 @@ All pre-built binaries and archive packages are scanned prior to release:
 - **Official SHA-256 Checksums (v0.9.0)**:
   ```text
   ED_GALACTIC_MEMOIR.exe:
-  e7fbe9cc35ad2db14dbe6aaed85265b224fa94b236291afc9ff6c58f176b2ebe
+  b48368ecc6b8836f70c413bbaa8aa36da9986ee0f795829c2e161d2cb57a5b7c
 
   ED_GALACTIC_MEMOIR.zip:
-  f9d5c03282df483ea00be50ba789be23b78fddaa8ad694b60f85183c0be7ff7d
+  4061b227bd3c0159e18a03f493689211c5eca9fd5bc6fd0e5d2b6e7b03b0377f
   ```
 
 #### 3. 🌐 Multi-Engine Verification via VirusTotal (Free & Highly Trusted)
