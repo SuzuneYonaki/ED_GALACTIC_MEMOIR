@@ -978,6 +978,57 @@ def init_db(conn=None, force: bool = False):
         except Exception:
             pass
 
+    # Global Full-Text Search Document Store & FTS5 Trigram Index
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS search_documents (
+        doc_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        doc_key TEXT NOT NULL UNIQUE,
+        category TEXT NOT NULL,
+        system_address INTEGER NOT NULL,
+        star_system TEXT NOT NULL,
+        body_id INTEGER,
+        body_name TEXT DEFAULT '',
+        title TEXT NOT NULL,
+        content TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_search_docs_sys ON search_documents(system_address);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_search_docs_cat ON search_documents(category);")
+
+    try:
+        cursor.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS search_documents_fts USING fts5(
+            title,
+            content,
+            content='search_documents',
+            content_rowid='doc_id',
+            tokenize='trigram'
+        );
+        """)
+        cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS search_docs_ai AFTER INSERT ON search_documents BEGIN
+            INSERT INTO search_documents_fts(rowid, title, content)
+            VALUES (new.doc_id, new.title, new.content);
+        END;
+        """)
+        cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS search_docs_ad AFTER DELETE ON search_documents BEGIN
+            INSERT INTO search_documents_fts(search_documents_fts, rowid, title, content)
+            VALUES ('delete', old.doc_id, old.title, old.content);
+        END;
+        """)
+        cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS search_docs_au AFTER UPDATE ON search_documents BEGIN
+            INSERT INTO search_documents_fts(search_documents_fts, rowid, title, content)
+            VALUES ('delete', old.doc_id, old.title, old.content);
+            INSERT INTO search_documents_fts(rowid, title, content)
+            VALUES (new.doc_id, new.title, new.content);
+        END;
+        """)
+    except sqlite3.OperationalError as fts_err:
+        print(f"[DB] FTS5 trigram initialization skipped: {fts_err}")
+
     conn.commit()
     _DB_INITIALIZED = True
     if close_after:

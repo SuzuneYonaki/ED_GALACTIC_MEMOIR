@@ -1,0 +1,732 @@
+import html
+import json
+import re
+import sqlite3
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+
+SEARCH_CATEGORIES: Tuple[str, ...] = (
+    "bookmark",
+    "system",
+    "body",
+    "bio",
+    "codex",
+    "mining",
+    "station",
+    "physics",
+)
+
+CATEGORY_PRIORITY: Dict[str, int] = {
+    "bookmark": 1,
+    "system": 2,
+    "body": 3,
+    "bio": 4,
+    "mining": 5,
+    "codex": 6,
+    "station": 7,
+    "physics": 8,
+}
+
+MAX_QUERY_LEN = 500
+MAX_QUERY_TERMS = 15
+
+
+def _now_iso() -> str:
+    return datetime.now().isoformat()
+
+
+def _clean_str(val: Any) -> str:
+    if val is None:
+        return ""
+    s = str(val).strip()
+    return s
+
+
+def _join_terms(parts: Sequence[Any]) -> str:
+    cleaned = []
+    for p in parts:
+        s = _clean_str(p)
+        if s:
+            cleaned.append(s)
+    return " | ".join(cleaned)
+
+
+def _extract_json_terms(raw: Optional[str]) -> str:
+    """Safely flattens JSON lists/dicts (rings, materials, anomalies, bio) into searchable text."""
+    if not raw or not isinstance(raw, str):
+        return ""
+    raw_s = raw.strip()
+    if not raw_s or raw_s in ("[]", "{}"):
+        return ""
+    try:
+        data = json.loads(raw_s)
+    except Exception:
+        return raw_s
+
+    tokens: List[str] = []
+
+    def _walk(node: Any) -> None:
+        if node is None:
+            return
+        if isinstance(node, str):
+            s = node.strip()
+            if s:
+                tokens.append(s)
+        elif isinstance(node, (int, float, bool)):
+            return
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+        elif isinstance(node, dict):
+            for k, v in node.items():
+                if k in ("type", "color", "count"):
+                    continue
+                if isinstance(v, (int, float)) and k not in ("Name", "name", "tag"):
+                    # Material dict style: {"iron": 12.3}
+                    if not isinstance(k, str) or k in ("Percent", "percent", "InnerRad", "OuterRad", "MassMT"):
+                        continue
+                    tokens.append(str(k))
+                else:
+                    _walk(v)
+
+    _walk(data)
+    # Deduplicate while preserving order
+    seen: Set[str] = set()
+    uniq: List[str] = []
+    for t in tokens:
+        low = t.lower()
+        if low not in seen:
+            seen.add(low)
+            uniq.append(t)
+    return " ".join(uniq)
+
+
+def _has_fts5_table(conn: sqlite3.Connection) -> bool:
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='search_documents_fts'"
+        ).fetchone()
+        return row is not None
+    except Exception:
+        return False
+
+
+def _collect_documents(
+    conn: sqlite3.Connection, system_address: Optional[int] = None
+) -> List[Tuple[str, str, int, str, Optional[int], str, str, str, str]]:
+    """
+    Collects normalized search document tuples:
+    (doc_key, category, system_address, star_system, body_id, body_name, title, content, updated_at)
+    """
+    cur = conn.cursor()
+    docs: List[Tuple[str, str, int, str, Optional[int], str, str, str, str]] = []
+    now = _now_iso()
+
+    where_sys = "WHERE system_address = ?" if system_address is not None else ""
+    params_sys: Tuple[Any, ...] = (system_address,) if system_address is not None else ()
+
+    # Build lookup for system_address -> star_system
+    sys_name_map: Dict[int, str] = {}
+    cur.execute(f"SELECT * FROM systems {where_sys}", params_sys)
+    sys_rows = cur.fetchall()
+    for s in sys_rows:
+        s_dict = dict(s)
+        addr = s_dict["system_address"]
+        star_sys = s_dict.get("star_system") or ""
+        sys_name_map[addr] = star_sys
+
+        factions_txt = _extract_json_terms(s_dict.get("edsm_factions_json"))
+        content = _join_terms([
+            star_sys,
+            s_dict.get("main_star_type"),
+            s_dict.get("system_allegiance"),
+            s_dict.get("system_economy"),
+            s_dict.get("system_second_economy"),
+            s_dict.get("system_government"),
+            s_dict.get("system_security"),
+            s_dict.get("controlling_faction"),
+            s_dict.get("system_state"),
+            s_dict.get("system_reserve"),
+            s_dict.get("shared_by"),
+            s_dict.get("shared_notes"),
+            s_dict.get("mining_scout_grade"),
+            factions_txt,
+        ])
+        docs.append((
+            f"system:{addr}",
+            "system",
+            addr,
+            star_sys,
+            None,
+            "",
+            star_sys,
+            content,
+            _clean_str(s_dict.get("last_visited")) or now,
+        ))
+
+    def _sys_name(addr: int, fallback: Optional[str] = None) -> str:
+        return sys_name_map.get(addr) or (fallback or "")
+
+    # 2. Bodies
+    cur.execute(f"SELECT * FROM bodies {where_sys}", params_sys)
+    for b in cur.fetchall():
+        bd = dict(b)
+        addr = bd["system_address"]
+        b_id = bd.get("body_id")
+        b_name = bd.get("body_name") or ""
+        star_sys = _sys_name(addr, bd.get("star_system"))
+
+        rings_txt = _extract_json_terms(bd.get("rings"))
+        mats_txt = _extract_json_terms(bd.get("materials"))
+        anom_txt = _extract_json_terms(bd.get("anomalies_json"))
+        gen_txt = _extract_json_terms(bd.get("confirmed_genuses"))
+        pred_txt = _extract_json_terms(bd.get("exobiology_predictions"))
+
+        content = _join_terms([
+            star_sys,
+            b_name,
+            bd.get("star_type"),
+            bd.get("luminosity"),
+            bd.get("planet_class"),
+            bd.get("atmosphere"),
+            bd.get("atmosphere_type"),
+            bd.get("volcanism"),
+            bd.get("terraforming_state"),
+            bd.get("reserve_level"),
+            rings_txt,
+            mats_txt,
+            anom_txt,
+            gen_txt,
+            pred_txt,
+        ])
+        key_id = b_id if b_id is not None else f"row{bd['id']}"
+        docs.append((
+            f"body:{addr}:{key_id}",
+            "body",
+            addr,
+            star_sys,
+            b_id,
+            b_name,
+            b_name or star_sys,
+            content,
+            _clean_str(bd.get("updated_timestamp") or bd.get("scan_timestamp")) or now,
+        ))
+
+    # 3. Bookmarks & Markdown Notes
+    cur.execute(f"SELECT * FROM body_bookmarks {where_sys}", params_sys)
+    for bm in cur.fetchall():
+        bmd = dict(bm)
+        addr = bmd["system_address"]
+        b_id = bmd.get("body_id")
+        b_name = bmd.get("body_name") or ""
+        star_sys = _sys_name(addr, bmd.get("star_system"))
+        alias = _clean_str(bmd.get("alias_name"))
+        note = _clean_str(bmd.get("note_markdown"))
+        title = f"{alias} ({b_name})" if alias and b_name else (alias or b_name or star_sys)
+        content = _join_terms([star_sys, b_name, alias, note])
+        docs.append((
+            f"bookmark:{addr}:{b_id}",
+            "bookmark",
+            addr,
+            star_sys,
+            b_id,
+            b_name,
+            title,
+            content,
+            _clean_str(bmd.get("updated_at")) or now,
+        ))
+
+    # 4. Scanned Organics (Exobiology)
+    cur.execute(f"SELECT * FROM scanned_organics {where_sys}", params_sys)
+    for org in cur.fetchall():
+        od = dict(org)
+        addr = od["system_address"]
+        b_id = od.get("body_id")
+        b_name = od.get("body_name") or ""
+        star_sys = _sys_name(addr)
+        title = _clean_str(
+            od.get("variant_localised")
+            or od.get("species_localised")
+            or od.get("species")
+            or od.get("genus_localised")
+            or od.get("genus")
+        ) or b_name or star_sys
+        content = _join_terms([
+            star_sys,
+            b_name,
+            od.get("genus"),
+            od.get("genus_localised"),
+            od.get("species"),
+            od.get("species_localised"),
+            od.get("variant"),
+            od.get("variant_localised"),
+            od.get("scan_type"),
+        ])
+        docs.append((
+            f"bio:{od['id']}",
+            "bio",
+            addr,
+            star_sys,
+            b_id,
+            b_name,
+            title,
+            content,
+            _clean_str(od.get("timestamp")) or now,
+        ))
+
+    # 5. Codex Entries
+    try:
+        cur.execute(f"SELECT * FROM codex_entries {where_sys}", params_sys)
+        for ce in cur.fetchall():
+            cd = dict(ce)
+            addr = cd["system_address"]
+            b_id = cd.get("body_id")
+            b_name = cd.get("body_name") or ""
+            star_sys = _sys_name(addr)
+            title = _clean_str(cd.get("name_localised") or cd.get("name")) or star_sys
+            content = _join_terms([
+                star_sys,
+                b_name,
+                cd.get("name"),
+                cd.get("name_localised"),
+                cd.get("category"),
+                cd.get("sub_category"),
+                cd.get("region_name"),
+                cd.get("ggg_variant"),
+            ])
+            docs.append((
+                f"codex:{cd['id']}",
+                "codex",
+                addr,
+                star_sys,
+                b_id,
+                b_name,
+                title,
+                content,
+                _clean_str(cd.get("timestamp") or cd.get("created_at")) or now,
+            ))
+    except sqlite3.OperationalError:
+        pass
+
+    # 6. Surface Mining Sites
+    try:
+        cur.execute(f"SELECT * FROM surface_mining_sites {where_sys}", params_sys)
+        for ms in cur.fetchall():
+            md = dict(ms)
+            addr = md["system_address"]
+            b_id = md.get("body_id")
+            b_name = md.get("body_name") or ""
+            star_sys = _sys_name(addr, md.get("star_system"))
+            hotspot = _clean_str(md.get("hotspot"))
+            title = f"{hotspot} ({b_name})" if hotspot and b_name else (hotspot or b_name or star_sys)
+            content = _join_terms([
+                star_sys,
+                b_name,
+                hotspot,
+                md.get("minerals"),
+                md.get("note"),
+            ])
+            docs.append((
+                f"mining:{md['id']}",
+                "mining",
+                addr,
+                star_sys,
+                b_id,
+                b_name,
+                title,
+                content,
+                _clean_str(md.get("updated_at")) or now,
+            ))
+    except sqlite3.OperationalError:
+        pass
+
+    # 7. Stations & Settlements
+    try:
+        cur.execute(f"SELECT * FROM stations {where_sys}", params_sys)
+        for st in cur.fetchall():
+            sd = dict(st)
+            addr = sd["system_address"]
+            b_id = sd.get("body_id")
+            b_name = sd.get("body_name") or ""
+            star_sys = _sys_name(addr)
+            st_name = _clean_str(sd.get("station_name"))
+            content = _join_terms([
+                star_sys,
+                b_name,
+                st_name,
+                sd.get("station_type"),
+                sd.get("allegiance"),
+                sd.get("economy"),
+                sd.get("government"),
+                sd.get("controlling_faction"),
+            ])
+            docs.append((
+                f"station:{sd['id']}",
+                "station",
+                addr,
+                star_sys,
+                b_id,
+                b_name,
+                st_name or star_sys,
+                content,
+                _clean_str(sd.get("updated_at")) or now,
+            ))
+    except sqlite3.OperationalError:
+        pass
+
+    # 8. Astrophysical Physics Reports
+    try:
+        cur.execute(f"SELECT * FROM system_physics_evaluations {where_sys}", params_sys)
+        for pe in cur.fetchall():
+            pd = dict(pe)
+            addr = pd["system_address"]
+            star_sys = _sys_name(addr, pd.get("star_system"))
+            anom_txt = _extract_json_terms(pd.get("anomalies_json"))
+            content = _join_terms([
+                star_sys,
+                anom_txt,
+                pd.get("narrative_report"),
+            ])
+            docs.append((
+                f"physics:{addr}",
+                "physics",
+                addr,
+                star_sys,
+                None,
+                "",
+                star_sys,
+                content,
+                _clean_str(pd.get("evaluated_at")) or now,
+            ))
+    except sqlite3.OperationalError:
+        pass
+
+    return docs
+
+
+def rebuild_search_index(conn: sqlite3.Connection) -> int:
+    """Rebuilds the entire full-text search index from all database tables."""
+    docs = _collect_documents(conn, system_address=None)
+    cur = conn.cursor()
+    cur.execute("DELETE FROM search_documents;")
+    if docs:
+        cur.executemany(
+            """
+            INSERT OR REPLACE INTO search_documents
+            (doc_key, category, system_address, star_system, body_id, body_name, title, content, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            docs,
+        )
+    conn.commit()
+    return len(docs)
+
+
+def sync_system_search_index(conn: sqlite3.Connection, system_address: int) -> int:
+    """Incrementally re-indexes a single star system's search documents."""
+    if system_address is None:
+        return 0
+    docs = _collect_documents(conn, system_address=system_address)
+    cur = conn.cursor()
+    cur.execute("DELETE FROM search_documents WHERE system_address = ?", (system_address,))
+    if docs:
+        cur.executemany(
+            """
+            INSERT OR REPLACE INTO search_documents
+            (doc_key, category, system_address, star_system, body_id, body_name, title, content, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            docs,
+        )
+    conn.commit()
+    return len(docs)
+
+
+def ensure_search_index(conn: sqlite3.Connection) -> None:
+    """Builds the search index on-demand if search_documents is empty while systems exist."""
+    cur = conn.cursor()
+    try:
+        doc_count = cur.execute("SELECT COUNT(*) FROM search_documents").fetchone()[0]
+        if doc_count == 0:
+            sys_count = cur.execute("SELECT COUNT(*) FROM systems").fetchone()[0]
+            if sys_count > 0:
+                rebuild_search_index(conn)
+    except sqlite3.OperationalError:
+        pass
+
+
+_TOKEN_RE = re.compile(r'(-?)"([^"]+)"|(\S+)')
+
+
+def parse_search_query(raw_query: Optional[str]) -> Tuple[List[str], List[str]]:
+    """
+    Parses a search query string into (positive_terms, negative_terms).
+    Supports quoted phrases ("high metal") and -exclusions (-gas).
+    Enforces length and term count bounds against DoS.
+    """
+    if not raw_query or not isinstance(raw_query, str):
+        return [], []
+    q = raw_query.strip()[:MAX_QUERY_LEN]
+    if not q:
+        return [], []
+
+    pos: List[str] = []
+    neg: List[str] = []
+
+    for match in _TOKEN_RE.finditer(q):
+        if len(pos) + len(neg) >= MAX_QUERY_TERMS:
+            break
+        neg_prefix, quoted, bare = match.groups()
+        if quoted is not None:
+            term = quoted.strip()
+            if not term:
+                continue
+            if neg_prefix == "-":
+                neg.append(term)
+            else:
+                pos.append(term)
+        elif bare is not None:
+            term = bare.strip()
+            if not term:
+                continue
+            if term.startswith("-") and len(term) > 1:
+                neg.append(term[1:])
+            else:
+                pos.append(term)
+
+    return pos, neg
+
+
+def _escape_like(term: str) -> str:
+    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _quote_fts5_term(term: str) -> str:
+    escaped = term.replace('"', '""')
+    return f'"{escaped}"'
+
+
+def _find_match_spans(text: str, terms: Sequence[str]) -> List[Tuple[int, int]]:
+    if not text or not terms:
+        return []
+    spans: List[Tuple[int, int]] = []
+    for term in terms:
+        if not term:
+            continue
+        pattern = re.compile(re.escape(term), re.IGNORECASE)
+        for m in pattern.finditer(text):
+            spans.append((m.start(), m.end()))
+    if not spans:
+        return []
+    spans.sort()
+    merged: List[Tuple[int, int]] = [spans[0]]
+    for start, end in spans[1:]:
+        prev_s, prev_e = merged[-1]
+        if start <= prev_e:
+            merged[-1] = (prev_s, max(prev_e, end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def build_highlighted_html(text: str, terms: Sequence[str]) -> str:
+    """Escapes text safely for HTML and wraps matched substrings in <mark> tags."""
+    if not text:
+        return ""
+    spans = _find_match_spans(text, terms)
+    if not spans:
+        return html.escape(text)
+    out: List[str] = []
+    pos = 0
+    for s, e in spans:
+        if s > pos:
+            out.append(html.escape(text[pos:s]))
+        out.append(f'<mark class="search-hl">{html.escape(text[s:e])}</mark>')
+        pos = e
+    if pos < len(text):
+        out.append(html.escape(text[pos:]))
+    return "".join(out)
+
+
+def build_highlighted_snippet(
+    text: str, terms: Sequence[str], max_len: int = 160
+) -> str:
+    """Extracts a contextual excerpt around the first matched term and safely highlights matches."""
+    if not text:
+        return ""
+    spans = _find_match_spans(text, terms)
+    if not spans:
+        excerpt = text[:max_len] + ("..." if len(text) > max_len else "")
+        return html.escape(excerpt)
+
+    first_s, _ = spans[0]
+    win_start = max(0, first_s - 45)
+    win_end = min(len(text), win_start + max_len)
+    if win_end - win_start < max_len and win_start > 0:
+        win_start = max(0, win_end - max_len)
+
+    prefix = "..." if win_start > 0 else ""
+    suffix = "..." if win_end < len(text) else ""
+    window = text[win_start:win_end]
+    return f"{prefix}{build_highlighted_html(window, terms)}{suffix}"
+
+
+def _build_sql_filter(
+    conn: sqlite3.Connection,
+    positive_terms: List[str],
+    negative_terms: List[str],
+    categories: Optional[List[str]] = None,
+) -> Tuple[str, List[Any]]:
+    """
+    Constructs a hybrid SQL query fragment using FTS5 trigram for >=3 char terms
+    and parameterized LIKE for short (<3 char) and negative terms.
+    Returns (sql_from_and_where, params).
+    """
+    use_fts = _has_fts5_table(conn)
+    trigram_terms = [t for t in positive_terms if len(t) >= 3] if use_fts else []
+    short_terms = [t for t in positive_terms if len(t) < 3] if use_fts else list(positive_terms)
+
+    where_clauses: List[str] = []
+    params: List[Any] = []
+
+    if trigram_terms:
+        from_clause = "FROM search_documents_fts fts JOIN search_documents sd ON fts.rowid = sd.doc_id"
+        fts_expr = " AND ".join(_quote_fts5_term(t) for t in trigram_terms)
+        where_clauses.append("search_documents_fts MATCH ?")
+        params.append(fts_expr)
+    else:
+        from_clause = "FROM search_documents sd"
+
+    for st in short_terms:
+        where_clauses.append("LOWER(sd.title || ' ' || sd.content) LIKE ? ESCAPE '\\'")
+        params.append(f"%{_escape_like(st.lower())}%")
+
+    for nt in negative_terms:
+        where_clauses.append("LOWER(sd.title || ' ' || sd.content) NOT LIKE ? ESCAPE '\\'")
+        params.append(f"%{_escape_like(nt.lower())}%")
+
+    if categories:
+        valid_cats = [c for c in categories if c in SEARCH_CATEGORIES]
+        if valid_cats:
+            placeholders = ",".join("?" for _ in valid_cats)
+            where_clauses.append(f"sd.category IN ({placeholders})")
+            params.extend(valid_cats)
+
+    where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+    return f"{from_clause} WHERE {where_sql}", params
+
+
+def search_fulltext(
+    conn: sqlite3.Connection,
+    query: str,
+    categories: Optional[List[str]] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> Dict[str, Any]:
+    """
+    Executes a full-text search across all indexed exploration data.
+    Returns {total, results, category_counts, query, positive_terms, negative_terms}.
+    """
+    ensure_search_index(conn)
+    pos_terms, neg_terms = parse_search_query(query)
+    if not pos_terms:
+        return {
+            "total": 0,
+            "results": [],
+            "category_counts": {},
+            "query": query or "",
+            "positive_terms": [],
+            "negative_terms": neg_terms,
+        }
+
+    limit = min(200, max(1, int(limit)))
+    offset = max(0, int(offset))
+
+    # Category facet counts (without category filter)
+    base_sql_all, base_params_all = _build_sql_filter(conn, pos_terms, neg_terms, categories=None)
+    cur = conn.cursor()
+    cat_rows = cur.execute(
+        f"SELECT sd.category, COUNT(*) as cnt {base_sql_all} GROUP BY sd.category",
+        base_params_all,
+    ).fetchall()
+    category_counts = {r["category"]: r["cnt"] for r in cat_rows}
+    total_unfiltered = sum(category_counts.values())
+
+    # Filtered results
+    sql_body, params = _build_sql_filter(conn, pos_terms, neg_terms, categories=categories)
+    if categories:
+        total = cur.execute(f"SELECT COUNT(*) {sql_body}", params).fetchone()[0]
+    else:
+        total = total_unfiltered
+
+    # Rank title matches higher, then category priority, then updated_at desc
+    first_term = pos_terms[0].lower()
+    like_first = f"%{_escape_like(first_term)}%"
+
+    rows = cur.execute(
+        f"""
+        SELECT sd.doc_id, sd.doc_key, sd.category, sd.system_address, sd.star_system,
+               sd.body_id, sd.body_name, sd.title, sd.content, sd.updated_at,
+               CASE WHEN LOWER(sd.title) LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END as title_rank,
+               CASE sd.category
+                   WHEN 'bookmark' THEN 1
+                   WHEN 'system' THEN 2
+                   WHEN 'body' THEN 3
+                   WHEN 'bio' THEN 4
+                   WHEN 'mining' THEN 5
+                   WHEN 'codex' THEN 6
+                   WHEN 'station' THEN 7
+                   WHEN 'physics' THEN 8
+                   ELSE 9
+               END as cat_rank
+        {sql_body}
+        ORDER BY title_rank ASC, cat_rank ASC, sd.updated_at DESC
+        LIMIT ? OFFSET ?
+        """,
+        [like_first] + params + [limit, offset],
+    ).fetchall()
+
+    results = []
+    for r in rows:
+        rd = dict(r)
+        results.append({
+            "doc_key": rd["doc_key"],
+            "category": rd["category"],
+            "system_address": rd["system_address"],
+            "star_system": rd["star_system"],
+            "body_id": rd["body_id"],
+            "body_name": rd["body_name"] or "",
+            "title": rd["title"],
+            "highlighted_title": build_highlighted_html(rd["title"], pos_terms),
+            "highlighted_snippet": build_highlighted_snippet(rd["content"], pos_terms),
+            "updated_at": rd["updated_at"],
+        })
+
+    return {
+        "total": total,
+        "total_unfiltered": total_unfiltered,
+        "results": results,
+        "category_counts": category_counts,
+        "query": query,
+        "positive_terms": pos_terms,
+        "negative_terms": neg_terms,
+    }
+
+
+def search_matching_system_addresses(
+    conn: sqlite3.Connection, query: str
+) -> Optional[Set[int]]:
+    """
+    Returns matching system_address set for a query (used to enhance /api/systems?q=...).
+    Returns None if query has no positive terms.
+    """
+    ensure_search_index(conn)
+    pos_terms, neg_terms = parse_search_query(query)
+    if not pos_terms:
+        return None
+    sql_body, params = _build_sql_filter(conn, pos_terms, neg_terms, categories=None)
+    rows = conn.execute(
+        f"SELECT DISTINCT sd.system_address {sql_body}",
+        params,
+    ).fetchall()
+    return {r[0] for r in rows}
