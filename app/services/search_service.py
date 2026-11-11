@@ -101,6 +101,16 @@ def _extract_json_terms(raw: Optional[str]) -> str:
     return " ".join(uniq)
 
 
+def _has_search_table(conn: sqlite3.Connection) -> bool:
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='search_documents'"
+        ).fetchone()
+        return row is not None
+    except Exception:
+        return False
+
+
 def _has_fts5_table(conn: sqlite3.Connection) -> bool:
     try:
         row = conn.execute(
@@ -627,11 +637,22 @@ def search_fulltext(
     Executes a full-text search across all indexed exploration data.
     Returns {total, results, category_counts, query, positive_terms, negative_terms}.
     """
+    if not _has_search_table(conn):
+        return {
+            "total": 0,
+            "total_unfiltered": 0,
+            "results": [],
+            "category_counts": {},
+            "query": query or "",
+            "positive_terms": [],
+            "negative_terms": [],
+        }
     ensure_search_index(conn)
     pos_terms, neg_terms = parse_search_query(query)
     if not pos_terms:
         return {
             "total": 0,
+            "total_unfiltered": 0,
             "results": [],
             "category_counts": {},
             "query": query or "",
@@ -713,6 +734,54 @@ def search_fulltext(
     }
 
 
+def _single_term_sys_query(use_fts: bool, term: str) -> Tuple[str, List[Any]]:
+    if use_fts and len(term) >= 3:
+        return (
+            "SELECT sd.system_address FROM search_documents_fts fts "
+            "JOIN search_documents sd ON fts.rowid = sd.doc_id "
+            "WHERE search_documents_fts MATCH ?",
+            [_quote_fts5_term(term)],
+        )
+    return (
+        "SELECT sd.system_address FROM search_documents sd "
+        "WHERE LOWER(sd.title || ' ' || sd.content) LIKE ? ESCAPE '\\'",
+        [f"%{_escape_like(term.lower())}%"],
+    )
+
+
+def build_system_address_subquery(
+    conn: sqlite3.Connection, query: str
+) -> Optional[Tuple[str, List[Any], List[str], List[str]]]:
+    """
+    Returns (subquery_sql, params, pos_terms, neg_terms) for filtering systems.system_address IN (...),
+    evaluating positive AND and negative EXCEPT across all documents belonging to each system.
+    Returns None if the search table is missing or the query has no positive terms.
+    """
+    if not _has_search_table(conn):
+        return None
+    ensure_search_index(conn)
+    pos_terms, neg_terms = parse_search_query(query)
+    if not pos_terms:
+        return None
+
+    use_fts = _has_fts5_table(conn)
+    parts: List[str] = []
+    params: List[Any] = []
+
+    for pt in pos_terms:
+        sql_part, p_part = _single_term_sys_query(use_fts, pt)
+        parts.append(sql_part)
+        params.extend(p_part)
+
+    subquery = " INTERSECT ".join(parts)
+    for nt in neg_terms:
+        sql_neg, p_neg = _single_term_sys_query(use_fts, nt)
+        subquery = f"{subquery} EXCEPT {sql_neg}"
+        params.extend(p_neg)
+
+    return subquery, params, pos_terms, neg_terms
+
+
 def search_matching_system_addresses(
     conn: sqlite3.Connection, query: str
 ) -> Optional[Set[int]]:
@@ -720,13 +789,21 @@ def search_matching_system_addresses(
     Returns matching system_address set for a query (used to enhance /api/systems?q=...).
     Returns None if query has no positive terms.
     """
-    ensure_search_index(conn)
-    pos_terms, neg_terms = parse_search_query(query)
-    if not pos_terms:
+    sub = build_system_address_subquery(conn, query)
+    if sub is None:
         return None
-    sql_body, params = _build_sql_filter(conn, pos_terms, neg_terms, categories=None)
-    rows = conn.execute(
-        f"SELECT DISTINCT sd.system_address {sql_body}",
-        params,
-    ).fetchall()
+    sub_sql, params, _, _ = sub
+    rows = conn.execute(sub_sql, params).fetchall()
     return {r[0] for r in rows}
+
+
+def safe_sync_system_search_index(conn: sqlite3.Connection, system_address: Optional[int]) -> int:
+    """Safely updates search index for a single system without breaking callers if FTS table is absent."""
+    if system_address is None:
+        return 0
+    try:
+        return sync_system_search_index(conn, int(system_address))
+    except Exception as e:
+        print(f"[SearchIndex] Incremental sync warning for {system_address}: {e}")
+        return 0
+

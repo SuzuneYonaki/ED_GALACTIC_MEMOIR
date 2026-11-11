@@ -34,6 +34,12 @@ from app.parser.bioscan.adapters import build_system_context
 from app.utils.galactic_regions import get_region_from_coords
 from app.services.bio_log import collect_bio_entries, query_bio_log
 from app.services.version_service import version_service
+from app.services.search_service import (
+    search_fulltext,
+    rebuild_search_index,
+    build_system_address_subquery,
+    safe_sync_system_search_index,
+)
 from app.live.rhino.note_integrator import update_body_note_in_db
 from app.live.rhino.tracker import sync_body_mining_to_note, extract_all_mining_materials_for_body, extract_rhino_mining_sites
 # app.services.export_service is imported inline (build_interactive_orrery in
@@ -192,7 +198,23 @@ async def on_shutdown():
 def on_journal_file_updated(file_path: Optional[str] = None):
     manager.notify_update_from_thread(file_path)
 
+_SEARCH_SYNC_EVENTS = frozenset({
+    "Scan", "FSDJump", "Location", "FSSAllBodiesFound",
+    "SAAScanComplete", "ScanOrganic", "CodexEntry", "Docked",
+})
+
 def on_journal_event(event_name: str, event_data: dict):
+    if event_name in _SEARCH_SYNC_EVENTS and isinstance(event_data, dict):
+        sys_addr = event_data.get("SystemAddress")
+        if sys_addr:
+            try:
+                _s_conn = get_db_connection()
+                try:
+                    safe_sync_system_search_index(_s_conn, sys_addr)
+                finally:
+                    _s_conn.close()
+            except Exception:
+                pass
     manager.notify_event_from_thread(event_name, event_data)
     addon_manager.dispatch("journal_event", event_name=event_name, event_data=event_data)
 
@@ -521,6 +543,7 @@ def save_body_bookmark(payload: BookmarkPayload):
             note_markdown = excluded.note_markdown,
             updated_at = excluded.updated_at;
     """, (payload.system_address, payload.body_id, payload.body_name, payload.star_system, (payload.alias_name or "").strip(), payload.note_markdown or "", now, now))
+    safe_sync_system_search_index(conn, payload.system_address)
     conn.commit()
     conn.close()
     return {"status": "ok", "message": "Bookmark saved"}
@@ -530,6 +553,7 @@ def delete_body_bookmark(system_address: int, body_id: int):
     conn = get_db_connection()
     c = conn.cursor()
     c.execute("DELETE FROM body_bookmarks WHERE system_address = ? AND body_id = ?", (system_address, body_id))
+    safe_sync_system_search_index(conn, system_address)
     conn.commit()
     conn.close()
     return {"status": "ok", "message": "Bookmark deleted"}
@@ -569,6 +593,7 @@ def append_mining_to_bookmark_endpoint(system_address: int, body_id: int, payloa
                 star_system=star_system
             )
 
+        safe_sync_system_search_index(conn, system_address)
         c.execute("SELECT * FROM body_bookmarks WHERE system_address = ? AND body_id = ?", (system_address, body_id))
         saved = c.fetchone()
         return {
@@ -793,15 +818,34 @@ def get_systems(
     params = []
 
     if q and q.strip():
-        term = f"%{q.strip()}%"
-        conditions.append("""(
-            systems.star_system LIKE ? OR EXISTS (
-                SELECT 1 FROM body_bookmarks bb 
-                WHERE bb.system_address = systems.system_address 
-                AND (bb.alias_name LIKE ? OR bb.note_markdown LIKE ? OR bb.body_name LIKE ?)
-            )
-        )""")
-        params.extend([term, term, term, term])
+        sub = build_system_address_subquery(conn, q)
+        if sub:
+            sub_sql, sub_params, _pos_terms, neg_terms = sub
+            if neg_terms:
+                conditions.append(f"systems.system_address IN ({sub_sql})")
+                params.extend(sub_params)
+            else:
+                term = f"%{q.strip()}%"
+                conditions.append(f"""(
+                    systems.system_address IN ({sub_sql})
+                    OR systems.star_system LIKE ?
+                    OR EXISTS (
+                        SELECT 1 FROM body_bookmarks bb 
+                        WHERE bb.system_address = systems.system_address 
+                        AND (bb.alias_name LIKE ? OR bb.note_markdown LIKE ? OR bb.body_name LIKE ?)
+                    )
+                )""")
+                params.extend(sub_params + [term, term, term, term])
+        else:
+            term = f"%{q.strip()}%"
+            conditions.append("""(
+                systems.star_system LIKE ? OR EXISTS (
+                    SELECT 1 FROM body_bookmarks bb 
+                    WHERE bb.system_address = systems.system_address 
+                    AND (bb.alias_name LIKE ? OR bb.note_markdown LIKE ? OR bb.body_name LIKE ?)
+                )
+            )""")
+            params.extend([term, term, term, term])
 
     c_bm = _parse_filter_min_count(has_bookmarks)
     if c_bm == 1:
@@ -1736,6 +1780,7 @@ def api_create_mining_site(req: MiningSiteCreateRequest):
             hotspot=req.hotspot or "",
             note=req.note or ""
         )
+        safe_sync_system_search_index(conn, req.system_address)
         return {"status": "success", "site_id": site_id}
     finally:
         conn.close()
@@ -1745,6 +1790,8 @@ def api_create_mining_site(req: MiningSiteCreateRequest):
 def api_update_mining_site(site_id: int, req: MiningSiteUpdateRequest):
     conn = get_db_connection()
     try:
+        row_site = conn.execute("SELECT system_address FROM surface_mining_sites WHERE id = ?", (site_id,)).fetchone()
+        sys_addr_for_sync = row_site["system_address"] if row_site else None
         ok = update_mining_site(
             conn=conn,
             site_id=site_id,
@@ -1756,6 +1803,7 @@ def api_update_mining_site(site_id: int, req: MiningSiteUpdateRequest):
         )
         if not ok:
             return JSONResponse({"error": "Mining site not found"}, status_code=404)
+        safe_sync_system_search_index(conn, sys_addr_for_sync)
         return {"status": "success", "site_id": site_id}
     finally:
         conn.close()
@@ -1765,9 +1813,12 @@ def api_update_mining_site(site_id: int, req: MiningSiteUpdateRequest):
 def api_delete_mining_site(site_id: int):
     conn = get_db_connection()
     try:
+        row_site = conn.execute("SELECT system_address FROM surface_mining_sites WHERE id = ?", (site_id,)).fetchone()
+        sys_addr_for_sync = row_site["system_address"] if row_site else None
         ok = delete_mining_site(conn, site_id)
         if not ok:
             return JSONResponse({"error": "Mining site not found"}, status_code=404)
+        safe_sync_system_search_index(conn, sys_addr_for_sync)
         return {"status": "success", "deleted_id": site_id}
     finally:
         conn.close()
@@ -2330,6 +2381,15 @@ def run_background_parse():
         scan_state["total"] = tot
         scan_state["percent"] = 100
         scan_state["filename"] = ""
+        scan_state["message"] = "Updating full-text search index..."
+        try:
+            _idx_conn = get_db_connection()
+            try:
+                rebuild_search_index(_idx_conn)
+            finally:
+                _idx_conn.close()
+        except Exception as _idx_err:
+            print(f"[SearchIndex] Background rebuild warning: {_idx_err}")
         scan_state["message"] = f"Successfully parsed {tot} journal files from {target_dir}."
     except Exception as e:
         scan_state["message"] = f"Error: {str(e)}"
@@ -2530,7 +2590,44 @@ def import_edsm_external_system(system_name: str):
     if not result.get("success"):
         return JSONResponse({"error": result.get("error", "EDSMからのインポートに失敗しました。")}, status_code=404)
 
+    if result.get("system_address"):
+        try:
+            _ext_conn = get_db_connection()
+            try:
+                safe_sync_system_search_index(_ext_conn, result.get("system_address"))
+            finally:
+                _ext_conn.close()
+        except Exception:
+            pass
+
     return JSONResponse(result)
+
+@app.get("/api/search")
+def global_fulltext_search(
+    q: str = "",
+    category: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    """Cross-database full-text search across systems, bodies, notes, bio scans, mining, stations, codex, and physics reports."""
+    conn = get_db_connection()
+    try:
+        cats = [c.strip() for c in category.split(",") if c.strip()] if category else None
+        return search_fulltext(conn, query=q, categories=cats, limit=limit, offset=offset)
+    finally:
+        conn.close()
+
+
+@app.post("/api/search/rebuild")
+def rebuild_fulltext_search_index():
+    """Rebuilds the entire full-text search index."""
+    conn = get_db_connection()
+    try:
+        count = rebuild_search_index(conn)
+        return {"status": "ok", "indexed_count": count}
+    finally:
+        conn.close()
+
 
 @app.get("/api/bio_log")
 def get_bio_log(
@@ -2555,6 +2652,7 @@ def get_bio_log(
 _EXTERNAL_DEPENDENT_TABLES = (
     "bodies", "stations", "system_physics_evaluations", "surface_mining_sites",
     "surface_mining_activities", "body_bookmarks", "codex_entries", "scanned_organics", "visits",
+    "search_documents",
 )
 # Only systems loaded from EDSM and never visited by the CMDR are ever removable here;
 # the CMDR's own journal-derived systems (visit_count > 0) are never touched.
