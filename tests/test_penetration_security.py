@@ -67,6 +67,18 @@ class TestSQLInjectionPenetration:
             # Clean up
             client.delete("/api/bookmark/99999999/999")
 
+    def test_global_search_sqli(self):
+        """Verify /api/search escapes SQL and FTS5 payloads safely."""
+        fts_evils = self.SQLI_PAYLOADS + [
+            'NEAR("a" "b", 5)',
+            '* : ^ "" ()',
+            "bookmark' OR 1=1--",
+        ]
+        for payload in fts_evils:
+            res = client.get("/api/search", params={"q": payload, "category": payload})
+            assert res.status_code == 200, f"Failed on /api/search payload: {payload}"
+            assert "results" in res.json()
+
 
 class TestPathTraversalPenetration:
     """Simulates directory traversal attacks to read arbitrary local files."""
@@ -151,6 +163,14 @@ class TestMalformedPayloadDoS:
         res = client.get(f"/api/systems?q={huge_str}")
         assert res.status_code == 200
         assert res.json().get("systems") == []
+
+    def test_oversized_global_search_and_bounds(self):
+        """Ensure oversized query and extreme limit/offset do not crash /api/search."""
+        huge_str = "NON_EXISTENT_" + ("X" * 10000)
+        res = client.get("/api/search", params={"q": huge_str, "limit": 999999, "offset": -50})
+        assert res.status_code == 200
+        data = res.json()
+        assert data.get("results") == []
 
     def test_invalid_json_body(self):
         """Ensure malformed JSON headers return clean 422 responses."""
