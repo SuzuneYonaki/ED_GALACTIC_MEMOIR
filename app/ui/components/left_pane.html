@@ -41,8 +41,13 @@
             </div>
             <div class="collapsible-body">
               <div class="search-bar">
-                <input type="text" id="system-search" class="search-input" data-i18n-placeholder="search_placeholder" placeholder="星系名を検索 (例: Sol, Beagle Point)...">
+                <input type="text" id="system-search" class="search-input" data-i18n-placeholder="search_placeholder" placeholder="星系名・メモ・天体・生体・鉱物を検索 (AND / -除外)...">
                 <button type="button" id="btn-search-clear" class="search-clear-btn" data-i18n-title="filter_clear" title="クリア" style="display: none;">&times;</button>
+              </div>
+              <div style="margin-top: 6px; display: flex;">
+                <button type="button" id="btn-open-fulltext-search" class="view-btn" style="width: 100%; padding: 5px 8px; font-size: 0.76rem; color: #38bdf8; background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.45); display: flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer; border-radius: 4px; font-weight: bold;" data-i18n-title="btn_open_fulltext_search_tip" title="メモ・天体・生体・鉱物・施設・物理レポートを横断全文検索します">
+                  <span data-i18n="btn_open_fulltext_search">🔎 全文検索ウィンドウ</span>
+                </button>
               </div>
 
               <!-- External Footprint Check Control & Status -->

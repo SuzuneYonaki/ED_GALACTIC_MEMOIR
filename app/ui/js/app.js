@@ -108,6 +108,7 @@ function updateStaticTexts() {
   }
 
   if (typeof window.refreshAgeChips === 'function') window.refreshAgeChips();
+  if (typeof window.refreshGlobalSearchLabels === 'function') window.refreshGlobalSearchLabels();
   updateHeaderPeriodLabel();
   updateHeaderValueDisplay();
 

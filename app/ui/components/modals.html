@@ -895,3 +895,50 @@
       </div>
     </div>
   </div>
+
+  <!-- Global Full-Text Search Modal -->
+  <div id="modal-global-search" class="modal-overlay" style="display: none;">
+    <div class="modal-content" style="width: 780px; max-width: 95vw; height: 82vh; display: flex; flex-direction: column; overflow: hidden; border: 1px solid rgba(56, 189, 248, 0.45); background: #0b1120;">
+      <div class="modal-header" style="padding: 12px 16px; background: rgba(56, 189, 248, 0.08); border-bottom: 1px solid rgba(56, 189, 248, 0.25); display: flex; align-items: center; justify-content: space-between;">
+        <h3 style="margin: 0; font-size: 0.95rem; color: #38bdf8; display: flex; align-items: center; gap: 8px;" data-i18n="global_search_title">
+          🔎 全文検索 (Full-Text Cross-Search)
+        </h3>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <button type="button" id="btn-global-search-rebuild" class="btn-page" style="padding: 4px 10px; font-size: 0.74rem;" data-i18n-title="global_search_rebuild_tip" title="データベース全体から検索インデックスを再構築します" data-i18n="global_search_rebuild_btn">
+            🔄 索引再構築
+          </button>
+          <button type="button" id="btn-close-global-search" class="modal-close-btn">&times;</button>
+        </div>
+      </div>
+
+      <div style="padding: 12px 16px 8px; border-bottom: 1px solid var(--border-color); background: rgba(0,0,0,0.2); display: flex; flex-direction: column; gap: 8px;">
+        <div style="display: flex; gap: 8px; align-items: center; position: relative;">
+          <input type="text" id="global-search-input" class="search-input" style="flex: 1; font-size: 0.88rem; padding: 8px 34px 8px 12px;" data-i18n-placeholder="global_search_placeholder" placeholder="キーワードを入力 (例: 高重力 鉄 -ガス / Stratum / Horizon)...">
+          <button type="button" id="btn-global-search-clear" class="search-clear-btn" style="display: none; right: 10px;" data-i18n-title="filter_clear" title="クリア">&times;</button>
+        </div>
+        <div style="font-size: 0.72rem; color: var(--text-secondary);" data-i18n="global_search_syntax_hint">
+          💡 ヒント: スペース区切りで AND検索、"フレーズ" で完全一致、-語 で除外検索できます（1文字からも検索可能）
+        </div>
+        <div id="global-search-categories" style="display: flex; flex-wrap: wrap; gap: 6px; padding-top: 2px;"></div>
+      </div>
+
+      <div id="global-search-status-bar" style="padding: 6px 16px; font-size: 0.74rem; color: var(--text-secondary); border-bottom: 1px solid rgba(255,255,255,0.06); display: flex; justify-content: space-between; align-items: center;">
+        <span id="global-search-summary"></span>
+        <span id="global-search-rebuild-status" style="color: var(--ed-cyan);"></span>
+      </div>
+
+      <div id="global-search-results" class="modal-body" style="padding: 12px 16px; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 8px;">
+        <div style="text-align: center; color: var(--text-secondary); padding: 36px 16px; font-size: 0.85rem;" data-i18n="global_search_empty_prompt">
+          キーワードを入力すると、全探査データ（星系・天体・メモ・生体・採掘・施設・物理レポート）を横断検索して抜粋表示します。
+        </div>
+      </div>
+
+      <div class="modal-footer" style="padding: 10px 16px; border-top: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.2);">
+        <button type="button" id="btn-global-search-more" class="view-btn" style="display: none; padding: 5px 14px; font-size: 0.78rem;"></button>
+        <div style="margin-left: auto;">
+          <button type="button" id="btn-dismiss-global-search" class="btn-page" style="padding: 6px 16px;" data-i18n="btn_close">閉じる</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
