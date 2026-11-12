@@ -4302,3 +4302,98 @@ mark.search-hl {
   align-items: center;
   gap: 4px;
 }
+
+/* Live Compact HUD Mode */
+.btn-live-compact {
+  background: rgba(56, 189, 248, 0.1);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  color: #7dd3fc;
+  padding: 3px 7px;
+  font-size: 0.7rem;
+  font-weight: bold;
+  border-radius: 4px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.btn-live-compact.armed {
+  border-color: rgba(251, 146, 60, 0.6);
+  color: #fed7aa;
+}
+.btn-live-compact.active {
+  background: rgba(0, 210, 255, 0.24);
+  border-color: var(--ed-cyan);
+  color: #fff;
+  box-shadow: 0 0 8px rgba(0, 210, 255, 0.35);
+}
+
+.live-compact-hud-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 5px 12px;
+  background: rgba(15, 23, 42, 0.9);
+  border-bottom: 1px solid rgba(0, 210, 255, 0.35);
+  font-size: 0.74rem;
+}
+
+.live-hud-pill {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: bold;
+  padding: 2px 7px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.06);
+  color: #e2e8f0;
+  white-space: nowrap;
+}
+.live-hud-pill.hud-live { color: #38bdf8; border-color: rgba(56, 189, 248, 0.45); background: rgba(56, 189, 248, 0.14); }
+.live-hud-pill.hud-jump { color: #c084fc; border-color: rgba(192, 132, 252, 0.5); background: rgba(192, 132, 252, 0.16); }
+.live-hud-pill.hud-wait { color: #fbbf24; border-color: rgba(251, 191, 36, 0.5); background: rgba(251, 191, 36, 0.14); }
+.live-hud-pill.hud-ok { color: #00ff88; border-color: rgba(0, 255, 136, 0.45); background: rgba(0, 255, 136, 0.12); }
+.live-hud-pill.hud-elw { color: #60a5fa; border-color: rgba(96, 165, 250, 0.4); }
+.live-hud-pill.hud-ww { color: #38bdf8; border-color: rgba(56, 189, 248, 0.4); }
+.live-hud-pill.hud-tf { color: #4ade80; border-color: rgba(74, 222, 128, 0.4); }
+.live-hud-pill.hud-bio { color: #00ff88; border-color: rgba(0, 255, 136, 0.4); }
+.live-hud-pill.hud-highg { color: #fb923c; border-color: rgba(251, 146, 60, 0.45); }
+
+.live-hud-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Simplify system header and cards cleanly when Live Compact HUD is active */
+body.live-compact-active #current-system-coords,
+body.live-compact-active #current-system-edsm-badge,
+body.live-compact-active #btn-sync-edsm,
+body.live-compact-active #btn-sync-spansh,
+body.live-compact-active #current-system-state-badge,
+body.live-compact-active #current-system-economy-info,
+body.live-compact-active #current-system-external-badge,
+body.live-compact-active #current-system-shared-badge,
+body.live-compact-active #current-system-distances,
+body.live-compact-active .share-dropdown-container {
+  display: none !important;
+}
+
+body.live-compact-active .system-header-bar {
+  padding: 6px 12px;
+}
+
+body.live-compact-active .system-card {
+  padding: 6px 8px;
+}
+
+body.live-compact-active .system-card-sub-header,
+body.live-compact-active .system-card-voxel-age,
+body.live-compact-active .system-distance-bar,
+body.live-compact-active .system-landable-bar {
+  display: none !important;
+}

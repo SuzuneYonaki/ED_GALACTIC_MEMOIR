@@ -602,6 +602,7 @@ function renderSystemHeader() {
 
   document.getElementById('current-system-fss-value').innerText = formatCredits(sys.total_fss_value || 0);
   document.getElementById('current-system-value').innerText = formatCredits(sys.total_potential_value || 0);
+  if (typeof window.renderLiveCompactHudStrip === 'function') window.renderLiveCompactHudStrip();
   
   // EDSM Discovery Badge in Header
   const edsmBadgeEl = document.getElementById('current-system-edsm-badge');
