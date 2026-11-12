@@ -63,12 +63,12 @@ function renderMiningView(container, bodies) {
       const lang = (typeof getAppLang === 'function') ? getAppLang() : 'ja';
       const ringLabel = lang === 'en' ? `${rInfo.nameEn} ${isBelt ? 'Belt' : 'Ring'}` : `${rInfo.nameJa} (${rInfo.nameEn} ${isBelt ? 'Belt' : 'Ring'})`;
       const rBadge = `<span class="tag-badge" style="background: ${rInfo.bg}; color: ${rInfo.color}; border: 1px solid ${rInfo.border}; font-weight: bold; font-size: 0.72rem;">
-        ${rInfo.icon} ${ringLabel}
+        ${rInfo.icon} ${escapeHtml(ringLabel)}
       </span>`;
 
       const reserveInfo = parseReserveLevel(item.reserve_level);
       const reserveBadge = reserveInfo ? `<span class="tag-badge" style="background: rgba(34, 197, 94, 0.15); color: ${reserveInfo.color}; border: 1px solid rgba(34, 197, 94, 0.35); font-size: 0.7rem;">
-        ${reserveInfo.icon} ${reserveInfo.label || reserveInfo.name}
+        ${reserveInfo.icon} ${escapeHtml(reserveInfo.label || reserveInfo.name)}
       </span>` : '';
 
       const hsBadges = Object.entries(item.hotspots).map(([mineral, count]) => {
@@ -478,7 +478,7 @@ function renderMiningView(container, bodies) {
             const matChips = mats.slice(0, 8).map(m => {
               const mName = m.Name || m.name || '';
               const mPct = m.Percent !== undefined ? m.Percent.toFixed(1) + '%' : '';
-              return `<span class="tag-badge" style="background: rgba(255,255,255,0.06); color: #e2e8f0; font-size: 0.65rem; padding: 1px 4px;">${mName} ${mPct}</span>`;
+              return `<span class="tag-badge" style="background: rgba(255,255,255,0.06); color: #e2e8f0; font-size: 0.65rem; padding: 1px 4px;">${escapeHtml(mName)} ${escapeHtml(mPct)}</span>`;
             });
             matHtml = `
               <div style="display: flex; flex-wrap: wrap; gap: 3px; margin-top: 6px; padding-top: 4px; border-top: 1px dashed rgba(255,255,255,0.06); align-items: center;">
@@ -527,20 +527,20 @@ function renderMiningView(container, bodies) {
       }
 
       const aliasTag = (body.bookmark && body.bookmark.alias_name)
-        ? `<span class="tag-badge" style="background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.5); font-size: 0.75rem; font-weight: bold;">🏷️ ${body.bookmark.alias_name}</span>`
+        ? `<span class="tag-badge" style="background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.5); font-size: 0.75rem; font-weight: bold;">🏷️ ${escapeHtml(body.bookmark.alias_name)}</span>`
         : '';
       const bookmarkBadge = body.bookmark
-        ? `<span class="tag-badge tag-bookmark" title="${(body.bookmark.alias_name ? `[${body.bookmark.alias_name}] ` : '') + (body.bookmark.note_markdown || '')}">🔖 ${body.bookmark.alias_name || 'BOOKMARK'}</span>`
+        ? `<span class="tag-badge tag-bookmark" title="${escapeHtml((body.bookmark.alias_name ? `[${body.bookmark.alias_name}] ` : '') + (body.bookmark.note_markdown || ''))}">🔖 ${escapeHtml(body.bookmark.alias_name || 'BOOKMARK')}</span>`
         : '';
 
       card.innerHTML = `
         <div class="node-card-top">
           <div class="node-info-left" style="width: 100%;">
-            <div class="body-icon ${iconClass}">${iconLabel}</div>
+            <div class="body-icon ${iconClass}">${escapeHtml(iconLabel)}</div>
             <div class="node-details" style="flex: 1;">
               <div style="display: flex; align-items: center; justify-content: space-between; gap: 6px; flex-wrap: wrap;">
                 <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-                  <span class="node-name" style="font-size: 0.95rem; ${isTarget ? 'color: var(--ed-cyan); font-weight: bold;' : ''}">${body.body_name}</span>
+                  <span class="node-name" style="font-size: 0.95rem; ${isTarget ? 'color: var(--ed-cyan); font-weight: bold;' : ''}">${escapeHtml(body.body_name)}</span>
                   ${aliasTag}
                   <button class="view-btn btn-copy-body-sub" style="padding: 1px 5px; font-size: 0.68rem;" title="${t('focus_in_sysmap_tip') || '天体名をクリップボードにコピー'}">📋</button>
                 </div>
@@ -552,7 +552,7 @@ function renderMiningView(container, bodies) {
               <!-- Main Badges Row -->
               <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; align-items: center;">
                 ${bookmarkBadge}
-                <span class="tag-badge" style="${typeStyle} font-weight: bold;">${typeName}</span>
+                <span class="tag-badge" style="${typeStyle} font-weight: bold;">${escapeHtml(typeName)}</span>
                 ${(() => {
                   if (!isRinged) return '';
                   let rList = body.rings_list;
@@ -565,8 +565,8 @@ function renderMiningView(container, bodies) {
                       const info = parseRingClass(r.RingClass);
                       const isB = (r.Name || '').toLowerCase().includes('belt');
                       const rPrefix = t('ring_or_belt_label') || '💍 環:';
-                      return `<span class="tag-badge" style="background: ${info.bg}; color: ${info.color}; border: 1px solid ${info.border}; font-weight: bold; box-shadow: 0 0 4px ${info.bg};" title="${r.Name || ''} - ${info.description}">
-                        ${rPrefix} ${info.icon} ${info.label || info.name}
+                      return `<span class="tag-badge" style="background: ${info.bg}; color: ${info.color}; border: 1px solid ${info.border}; font-weight: bold; box-shadow: 0 0 4px ${info.bg};" title="${escapeHtml(r.Name || '')} - ${escapeHtml(info.description)}">
+                        ${rPrefix} ${info.icon} ${escapeHtml(info.label || info.name)}
                       </span>`;
                     }).join(' ');
                   }

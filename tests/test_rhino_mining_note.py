@@ -136,10 +136,18 @@ def test_journal_parser_live_mining_auto_note():
     # Process another MaterialCollected at same coords
     parser.process_journal_line('{"timestamp":"2026-09-12T09:00:05Z","event":"MaterialCollected","Category":"Raw","Name":"iron","Name_Localised":"Iron","Count":1}')
 
-    # Check note in DB
-    row = conn.execute("SELECT note_markdown FROM body_bookmarks WHERE system_address = ? AND body_id = ?", (sys_addr, body_id)).fetchone()
+    # Check site recorded in surface_mining_sites (notes are only modified on explicit user action)
+    row = conn.execute(
+        "SELECT minerals FROM surface_mining_sites WHERE system_address = ? AND body_id = ?",
+        (sys_addr, body_id),
+    ).fetchone()
     assert row is not None
-    note = row["note_markdown"]
-    assert "- [Lat: -15.5555°, Lon: +30.3333°]: Iron, Selenium" in note
+    assert "Iron" in row["minerals"]
+    assert "Selenium" in row["minerals"]
+    bm_row = conn.execute(
+        "SELECT note_markdown FROM body_bookmarks WHERE system_address = ? AND body_id = ?",
+        (sys_addr, body_id),
+    ).fetchone()
+    assert bm_row is None
 
     conn.close()

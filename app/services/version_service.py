@@ -17,7 +17,7 @@ from app.config import APP_VERSION
 
 logger = logging.getLogger(__name__)
 
-GITHUB_REPO = "SuzuneYonaki/ED_Journal_Analyzer"
+GITHUB_REPO = "SuzuneYonaki/ED_GALACTIC_MEMOIR"
 GITHUB_LATEST_RELEASE_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 CACHE_TTL_SECONDS = 3600  # 1 hour
 ERROR_COOLDOWN_SECONDS = 300  # 5 minutes on failure

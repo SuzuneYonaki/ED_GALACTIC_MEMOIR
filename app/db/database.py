@@ -1015,7 +1015,8 @@ def save_or_merge_mining_site(
     material_name: str,
     hotspot: str = "",
     timestamp: Optional[str] = None,
-    note: str = ""
+    note: str = "",
+    commit: bool = True
 ) -> int:
     """
     Saves a mined material at (latitude, longitude).
@@ -1063,7 +1064,8 @@ def save_or_merge_mining_site(
             SET minerals = ?, hotspot = ?, updated_at = ?
             WHERE id = ?
         """, (merged_mats_str, final_hotspot, now_ts, site_id))
-        conn.commit()
+        if commit:
+            conn.commit()
         return site_id
     else:
         cursor.execute("""
@@ -1075,7 +1077,8 @@ def save_or_merge_mining_site(
             system_address, star_system or "Unknown", body_id, body_name or (f"Body {body_id}" if body_id is not None else "Surface"),
             round(latitude, 6), round(longitude, 6), (hotspot or "").strip(), clean_mat, note, now_ts, now_ts
         ))
-        conn.commit()
+        if commit:
+            conn.commit()
         return cursor.lastrowid
 
 

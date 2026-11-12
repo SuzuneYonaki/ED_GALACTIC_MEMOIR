@@ -544,6 +544,7 @@ const i18n = {
     tts_high_bio_thresh_8m: "8M Cr (基礎額基準)",
     btn_tts_high_bio_test: "🔊 高額生物テスト発声",
     tts_bio_variables_tip: "使用可能な変数: {body} = 天体名, {bio_count} = シグナル数, {value} = 見込額, {system} = 星系名",
+    tts_var_prefix: "変数:",
     tts_bio_presets_label: "プリセット:",
     tts_bio_preset_signals_value: "シグナル数 ➜ 金額",
     tts_bio_preset_value_signals: "金額 ➜ シグナル数",
@@ -587,8 +588,8 @@ const i18n = {
     shared_by_label: "共有者",
     unshare_label: "共有解除",
     share_label: "共有マーク",
-    import_sig_ok: "✓ SHA-256 電子署名検証成功: 改ざんなし (正規パッケージ)",
-    import_sig_warn: "⚠️ 電子署名が一致しません。パッケージが編集・破損している可能性があります。",
+    import_sig_ok: "✓ SHA-256 整合性チェック成功: データ破損・改変なし",
+    import_sig_warn: "⚠️ 整合性チェックサムが一致しません。パッケージが編集・破損している可能性があります。",
     import_success: "件の星系を取り込みました。",
 
     // Live Sync & Sort Accordion
@@ -1657,6 +1658,7 @@ const i18n = {
     tts_high_bio_thresh_8m: "8M Cr (Base Value Tier)",
     btn_tts_high_bio_test: "🔊 Test High Bio Voice",
     tts_bio_variables_tip: "Available variables: {body} = Body name, {bio_count} = Signal count, {value} = Payout, {system} = System name",
+    tts_var_prefix: "Vars:",
     tts_bio_presets_label: "Presets:",
     tts_bio_preset_signals_value: "Signals ➜ Value",
     tts_bio_preset_value_signals: "Value ➜ Signals",
@@ -1700,8 +1702,8 @@ const i18n = {
     shared_by_label: "Shared By",
     unshare_label: "Unshare",
     share_label: "Share",
-    import_sig_ok: "✓ SHA-256 signature verified: Authentic package",
-    import_sig_warn: "⚠️ Signature mismatch. Package may be modified or corrupted.",
+    import_sig_ok: "✓ SHA-256 integrity check passed: Data intact",
+    import_sig_warn: "⚠️ Checksum mismatch. Package may be modified or corrupted.",
     import_success: "systems imported successfully.",
 
     // Live Sync & Sort Accordion

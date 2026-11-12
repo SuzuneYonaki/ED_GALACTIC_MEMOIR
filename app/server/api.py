@@ -1,6 +1,9 @@
 import json
 import os
+import re
 import subprocess
+import urllib.parse
+from contextlib import closing
 import sys
 import threading
 import time
@@ -55,17 +58,53 @@ from app.utils.voxel import voxel_key, voxel_age_stats
 
 app = FastAPI(title="ED GALACTIC MEMOIR", description="Your Flight Log, Your Legacy.")
 
+_LOCAL_ORIGIN_RE = re.compile(r"^https?://(127\.0\.0\.1|localhost)(:\d+)?$", re.IGNORECASE)
+_ALLOWED_LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "[::1]"})
+_STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "DELETE", "PATCH"})
+
+
+def _is_allowed_host_header(host_header: Optional[str]) -> bool:
+    if not host_header:
+        return True
+    h = host_header.strip().lower()
+    if h.startswith("["):
+        end_idx = h.find("]")
+        host_only = h[: end_idx + 1] if end_idx != -1 else h
+    else:
+        host_only = h.split(":", 1)[0]
+    if host_only in _ALLOWED_LOCAL_HOSTS:
+        return True
+    # Allow Starlette TestClient's default 'testserver' host strictly under pytest runs
+    if host_only == "testserver" and os.environ.get("PYTEST_CURRENT_TEST"):
+        return True
+    return False
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origin_regex=r"^https?://(127\.0\.0\.1|localhost)(:\d+)?$",
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Accept", "X-Requested-With"],
 )
 
 @app.middleware("http")
 async def add_no_cache_headers(request, call_next):
+    if not _is_allowed_host_header(request.headers.get("host")):
+        return JSONResponse({"error": "Invalid Host header forbidden"}, status_code=403)
+    if request.method in _STATE_CHANGING_METHODS:
+        origin = request.headers.get("origin")
+        if origin and not _LOCAL_ORIGIN_RE.match(origin.strip()):
+            return JSONResponse({"error": "Cross-origin state-changing request forbidden"}, status_code=403)
+        referer = request.headers.get("referer")
+        if referer and not origin:
+            parsed_ref = urllib.parse.urlparse(referer)
+            ref_origin = f"{parsed_ref.scheme}://{parsed_ref.netloc}" if parsed_ref.scheme and parsed_ref.netloc else ""
+            if ref_origin and not _LOCAL_ORIGIN_RE.match(ref_origin):
+                return JSONResponse({"error": "Cross-site referer forbidden"}, status_code=403)
+
     response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
     path = request.url.path
     if path.startswith("/static/") or path.startswith("/css/") or path.startswith("/js/") or path == "/":
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
@@ -230,6 +269,13 @@ def start_watcher():
 
 @app.websocket("/ws/live")
 async def websocket_live_endpoint(websocket: WebSocket):
+    if not _is_allowed_host_header(websocket.headers.get("host")):
+        await websocket.close(code=1008)
+        return
+    origin = websocket.headers.get("origin")
+    if origin and not _LOCAL_ORIGIN_RE.match(origin.strip()):
+        await websocket.close(code=1008)
+        return
     await manager.connect(websocket)
     try:
         # Send initial sync state
@@ -384,29 +430,31 @@ def get_cmdr_coordinates():
     body_name = status.get("BodyName")
     
     conn = get_db_connection()
-    c = conn.cursor()
+    try:
+        c = conn.cursor()
 
-    cmdr_loc = get_current_cmdr_location(conn)
-    star_system = cmdr_loc.get("star_system", "") if cmdr_loc else ""
-    sys_addr = cmdr_loc.get("system_address") if cmdr_loc else None
+        cmdr_loc = get_current_cmdr_location(conn)
+        star_system = cmdr_loc.get("star_system", "") if cmdr_loc else ""
+        sys_addr = cmdr_loc.get("system_address") if cmdr_loc else None
 
-    # Fallback to journal parser in-memory or DB surface activities if Status.json has no coords
-    if lat is None or lon is None:
-        c.execute("""
-            SELECT body_name, latitude, longitude, star_system, system_address
-            FROM surface_mining_activities
-            WHERE latitude IS NOT NULL AND longitude IS NOT NULL
-            ORDER BY timestamp DESC LIMIT 1
-        """)
-        act_row = c.fetchone()
-        if act_row:
-            lat = act_row["latitude"]
-            lon = act_row["longitude"]
-            body_name = body_name or act_row["body_name"]
-            star_system = star_system or act_row["star_system"]
-            sys_addr = sys_addr or act_row["system_address"]
+        # Fallback to journal parser in-memory or DB surface activities if Status.json has no coords
+        if lat is None or lon is None:
+            c.execute("""
+                SELECT body_name, latitude, longitude, star_system, system_address
+                FROM surface_mining_activities
+                WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+                ORDER BY timestamp DESC LIMIT 1
+            """)
+            act_row = c.fetchone()
+            if act_row:
+                lat = act_row["latitude"]
+                lon = act_row["longitude"]
+                body_name = body_name or act_row["body_name"]
+                star_system = star_system or act_row["star_system"]
+                sys_addr = sys_addr or act_row["system_address"]
 
-    conn.close()
+    finally:
+        conn.close()
 
     is_surface = (lat is not None and lon is not None)
     lat_val = round(float(lat), 6) if lat is not None else None
@@ -443,42 +491,44 @@ def get_galactic_extremes():
     """
     import math
     conn = get_db_connection()
-    c = conn.cursor()
-    base_where = "WHERE visit_count > 0 AND (is_external = 0 OR is_external IS NULL) AND star_pos_x IS NOT NULL AND star_pos_y IS NOT NULL AND star_pos_z IS NOT NULL"
+    try:
+        c = conn.cursor()
+        base_where = "WHERE visit_count > 0 AND (is_external = 0 OR is_external IS NULL) AND star_pos_x IS NOT NULL AND star_pos_y IS NOT NULL AND star_pos_z IS NOT NULL"
 
-    queries = {
-        "north": f"SELECT system_address, star_system, star_pos_x, star_pos_y, star_pos_z, last_visited, visit_count FROM systems {base_where} ORDER BY star_pos_z DESC, last_visited DESC LIMIT 1",
-        "south": f"SELECT system_address, star_system, star_pos_x, star_pos_y, star_pos_z, last_visited, visit_count FROM systems {base_where} ORDER BY star_pos_z ASC, last_visited DESC LIMIT 1",
-        "east": f"SELECT system_address, star_system, star_pos_x, star_pos_y, star_pos_z, last_visited, visit_count FROM systems {base_where} ORDER BY star_pos_x DESC, last_visited DESC LIMIT 1",
-        "west": f"SELECT system_address, star_system, star_pos_x, star_pos_y, star_pos_z, last_visited, visit_count FROM systems {base_where} ORDER BY star_pos_x ASC, last_visited DESC LIMIT 1",
-        "zenith": f"SELECT system_address, star_system, star_pos_x, star_pos_y, star_pos_z, last_visited, visit_count FROM systems {base_where} ORDER BY star_pos_y DESC, last_visited DESC LIMIT 1",
-        "nadir": f"SELECT system_address, star_system, star_pos_x, star_pos_y, star_pos_z, last_visited, visit_count FROM systems {base_where} ORDER BY star_pos_y ASC, last_visited DESC LIMIT 1",
-        "farthest": f"SELECT system_address, star_system, star_pos_x, star_pos_y, star_pos_z, last_visited, visit_count FROM systems {base_where} ORDER BY (star_pos_x * star_pos_x + star_pos_y * star_pos_y + star_pos_z * star_pos_z) DESC, last_visited DESC LIMIT 1"
-    }
+        queries = {
+            "north": f"SELECT system_address, star_system, star_pos_x, star_pos_y, star_pos_z, last_visited, visit_count FROM systems {base_where} ORDER BY star_pos_z DESC, last_visited DESC LIMIT 1",
+            "south": f"SELECT system_address, star_system, star_pos_x, star_pos_y, star_pos_z, last_visited, visit_count FROM systems {base_where} ORDER BY star_pos_z ASC, last_visited DESC LIMIT 1",
+            "east": f"SELECT system_address, star_system, star_pos_x, star_pos_y, star_pos_z, last_visited, visit_count FROM systems {base_where} ORDER BY star_pos_x DESC, last_visited DESC LIMIT 1",
+            "west": f"SELECT system_address, star_system, star_pos_x, star_pos_y, star_pos_z, last_visited, visit_count FROM systems {base_where} ORDER BY star_pos_x ASC, last_visited DESC LIMIT 1",
+            "zenith": f"SELECT system_address, star_system, star_pos_x, star_pos_y, star_pos_z, last_visited, visit_count FROM systems {base_where} ORDER BY star_pos_y DESC, last_visited DESC LIMIT 1",
+            "nadir": f"SELECT system_address, star_system, star_pos_x, star_pos_y, star_pos_z, last_visited, visit_count FROM systems {base_where} ORDER BY star_pos_y ASC, last_visited DESC LIMIT 1",
+            "farthest": f"SELECT system_address, star_system, star_pos_x, star_pos_y, star_pos_z, last_visited, visit_count FROM systems {base_where} ORDER BY (star_pos_x * star_pos_x + star_pos_y * star_pos_y + star_pos_z * star_pos_z) DESC, last_visited DESC LIMIT 1"
+        }
 
-    extremes = {}
-    for key, q in queries.items():
-        c.execute(q)
-        row = c.fetchone()
-        if row:
-            x = round(float(row["star_pos_x"]), 2)
-            y = round(float(row["star_pos_y"]), 2)
-            z = round(float(row["star_pos_z"]), 2)
-            dist_sol = round(math.sqrt(x * x + y * y + z * z), 2)
-            extremes[key] = {
-                "system_address": row["system_address"],
-                "star_system": row["star_system"],
-                "x": x,
-                "y": y,
-                "z": z,
-                "distance_sol": dist_sol,
-                "last_visited": row["last_visited"],
-                "visit_count": row["visit_count"]
-            }
-        else:
-            extremes[key] = None
+        extremes = {}
+        for key, q in queries.items():
+            c.execute(q)
+            row = c.fetchone()
+            if row:
+                x = round(float(row["star_pos_x"]), 2)
+                y = round(float(row["star_pos_y"]), 2)
+                z = round(float(row["star_pos_z"]), 2)
+                dist_sol = round(math.sqrt(x * x + y * y + z * z), 2)
+                extremes[key] = {
+                    "system_address": row["system_address"],
+                    "star_system": row["star_system"],
+                    "x": x,
+                    "y": y,
+                    "z": z,
+                    "distance_sol": dist_sol,
+                    "last_visited": row["last_visited"],
+                    "visit_count": row["visit_count"]
+                }
+            else:
+                extremes[key] = None
 
-    conn.close()
+    finally:
+        conn.close()
     return {"status": "success", "extremes": extremes}
 
 
@@ -497,41 +547,38 @@ class BookmarkPayload(BaseModel):
 
 @app.get("/api/bookmark/{system_address}/{body_id}")
 def get_body_bookmark(system_address: int, body_id: int):
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("SELECT * FROM body_bookmarks WHERE system_address = ? AND body_id = ?", (system_address, body_id))
-    row = c.fetchone()
-    conn.close()
-    if row:
-        return dict(row)
-    return JSONResponse(status_code=404, content={"message": "Bookmark not found"})
+    with closing(get_db_connection()) as conn:
+        c = conn.cursor()
+        c.execute("SELECT * FROM body_bookmarks WHERE system_address = ? AND body_id = ?", (system_address, body_id))
+        row = c.fetchone()
+        if row:
+            return dict(row)
+        return JSONResponse(status_code=404, content={"message": "Bookmark not found"})
 
 @app.post("/api/bookmark")
 def save_body_bookmark(payload: BookmarkPayload):
     now = datetime.now(timezone.utc).isoformat()
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("""
-        INSERT INTO body_bookmarks (system_address, body_id, body_name, star_system, alias_name, note_markdown, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(system_address, body_id) DO UPDATE SET
-            body_name = excluded.body_name,
-            star_system = excluded.star_system,
-            alias_name = excluded.alias_name,
-            note_markdown = excluded.note_markdown,
-            updated_at = excluded.updated_at;
-    """, (payload.system_address, payload.body_id, payload.body_name, payload.star_system, (payload.alias_name or "").strip(), payload.note_markdown or "", now, now))
-    conn.commit()
-    conn.close()
+    with closing(get_db_connection()) as conn:
+        c = conn.cursor()
+        c.execute("""
+            INSERT INTO body_bookmarks (system_address, body_id, body_name, star_system, alias_name, note_markdown, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(system_address, body_id) DO UPDATE SET
+                body_name = excluded.body_name,
+                star_system = excluded.star_system,
+                alias_name = excluded.alias_name,
+                note_markdown = excluded.note_markdown,
+                updated_at = excluded.updated_at;
+        """, (payload.system_address, payload.body_id, payload.body_name, payload.star_system, (payload.alias_name or "").strip(), payload.note_markdown or "", now, now))
+        conn.commit()
     return {"status": "ok", "message": "Bookmark saved"}
 
 @app.delete("/api/bookmark/{system_address}/{body_id}")
 def delete_body_bookmark(system_address: int, body_id: int):
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("DELETE FROM body_bookmarks WHERE system_address = ? AND body_id = ?", (system_address, body_id))
-    conn.commit()
-    conn.close()
+    with closing(get_db_connection()) as conn:
+        c = conn.cursor()
+        c.execute("DELETE FROM body_bookmarks WHERE system_address = ? AND body_id = ?", (system_address, body_id))
+        conn.commit()
     return {"status": "ok", "message": "Bookmark deleted"}
 
 class AppendMiningNotePayload(BaseModel):
@@ -582,23 +629,25 @@ def append_mining_to_bookmark_endpoint(system_address: int, body_id: int, payloa
 @app.get("/api/bookmarks")
 def list_bookmarks(q: Optional[str] = None):
     conn = get_db_connection()
-    c = conn.cursor()
-    if q and q.strip():
-        term = f"%{q.strip()}%"
-        c.execute("SELECT * FROM body_bookmarks WHERE star_system LIKE ? OR body_name LIKE ? OR alias_name LIKE ? OR note_markdown LIKE ? ORDER BY updated_at DESC", (term, term, term, term))
-    else:
-        c.execute("SELECT * FROM body_bookmarks ORDER BY updated_at DESC")
-    rows = [dict(r) for r in c.fetchall()]
-    for r in rows:
-        if r.get("main_star_subclass") is None and r.get("_calc_main_star_subclass") is not None:
-            r["main_star_subclass"] = r["_calc_main_star_subclass"]
-        if r.get("system_age_my") is None and r.get("_calc_system_age_my") is not None:
-            r["system_age_my"] = r["_calc_system_age_my"]
-        if r.get("main_star_mass") is None and r.get("_calc_main_star_mass") is not None:
-            r["main_star_mass"] = r["_calc_main_star_mass"]
-        if r.get("total_system_mass") is None and r.get("_calc_total_system_mass") is not None:
-            r["total_system_mass"] = r["_calc_total_system_mass"]
-    conn.close()
+    try:
+        c = conn.cursor()
+        if q and q.strip():
+            term = f"%{q.strip()}%"
+            c.execute("SELECT * FROM body_bookmarks WHERE star_system LIKE ? OR body_name LIKE ? OR alias_name LIKE ? OR note_markdown LIKE ? ORDER BY updated_at DESC", (term, term, term, term))
+        else:
+            c.execute("SELECT * FROM body_bookmarks ORDER BY updated_at DESC")
+        rows = [dict(r) for r in c.fetchall()]
+        for r in rows:
+            if r.get("main_star_subclass") is None and r.get("_calc_main_star_subclass") is not None:
+                r["main_star_subclass"] = r["_calc_main_star_subclass"]
+            if r.get("system_age_my") is None and r.get("_calc_system_age_my") is not None:
+                r["system_age_my"] = r["_calc_system_age_my"]
+            if r.get("main_star_mass") is None and r.get("_calc_main_star_mass") is not None:
+                r["main_star_mass"] = r["_calc_main_star_mass"]
+            if r.get("total_system_mass") is None and r.get("_calc_total_system_mass") is not None:
+                r["total_system_mass"] = r["_calc_total_system_mass"]
+    finally:
+        conn.close()
     return {"bookmarks": rows}
 
 @app.get("/api/stats")
@@ -608,86 +657,88 @@ def get_global_stats(
     date_field: Optional[str] = "last_visited"
 ):
     conn = get_db_connection()
-    c = conn.cursor()
+    try:
+        c = conn.cursor()
 
-    where_clauses = []
-    params = []
+        where_clauses = []
+        params = []
 
-    if date_from or date_to:
-        if date_field == "first_visited":
-            if date_from:
-                where_clauses.append("first_visited >= ?")
-                params.append(f"{date_from}T00:00:00")
-            if date_to:
-                where_clauses.append("first_visited <= ?")
-                params.append(f"{date_to}T23:59:59")
-        elif date_field == "any_visit":
-            sub_conds = []
-            sub_params = []
-            if date_from:
-                sub_conds.append("timestamp >= ?")
-                sub_params.append(f"{date_from}T00:00:00")
-            if date_to:
-                sub_conds.append("timestamp <= ?")
-                sub_params.append(f"{date_to}T23:59:59")
-            where_clauses.append(f"system_address IN (SELECT DISTINCT system_address FROM visits WHERE {' AND '.join(sub_conds)})")
-            params.extend(sub_params)
+        if date_from or date_to:
+            if date_field == "first_visited":
+                if date_from:
+                    where_clauses.append("first_visited >= ?")
+                    params.append(f"{date_from}T00:00:00")
+                if date_to:
+                    where_clauses.append("first_visited <= ?")
+                    params.append(f"{date_to}T23:59:59")
+            elif date_field == "any_visit":
+                sub_conds = []
+                sub_params = []
+                if date_from:
+                    sub_conds.append("timestamp >= ?")
+                    sub_params.append(f"{date_from}T00:00:00")
+                if date_to:
+                    sub_conds.append("timestamp <= ?")
+                    sub_params.append(f"{date_to}T23:59:59")
+                where_clauses.append(f"system_address IN (SELECT DISTINCT system_address FROM visits WHERE {' AND '.join(sub_conds)})")
+                params.extend(sub_params)
+            else:
+                if date_from:
+                    where_clauses.append("last_visited >= ?")
+                    params.append(f"{date_from}T00:00:00")
+                if date_to:
+                    where_clauses.append("last_visited <= ?")
+                    params.append(f"{date_to}T23:59:59")
+
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+        c.execute(f"""
+            SELECT 
+                COUNT(*) as total_systems,
+                COALESCE(SUM(visit_count), 0) as total_visits,
+                COALESCE(SUM(scanned_bodies), 0) as total_bodies,
+                COALESCE(SUM(total_potential_value), 0) as total_potential_value,
+                COALESCE(SUM(has_elw), 0) as elw_systems,
+                COALESCE(SUM(has_water_world), 0) as ww_systems,
+                COALESCE(SUM(has_ammonia), 0) as ammonia_systems,
+                COALESCE(SUM(has_terraformable), 0) as terraformable_systems,
+                COALESCE(SUM(has_bio), 0) as bio_systems,
+                COALESCE(SUM(total_bio_signals), 0) as total_bio_signals,
+                COALESCE(SUM(has_landable), 0) as landable_systems,
+                COALESCE(SUM(has_anomalies), 0) as anomaly_systems
+            FROM systems {where_sql}
+        """, params)
+        stats = dict(c.fetchone())
+
+        # Bio signals sum in matching systems
+        if where_sql:
+            c.execute(f"SELECT COALESCE(SUM(bio_signals), 0) as sum_bio FROM bodies WHERE system_address IN (SELECT system_address FROM systems {where_sql})", params)
+            stats["total_bio_signals"] = c.fetchone()["sum_bio"]
         else:
-            if date_from:
-                where_clauses.append("last_visited >= ?")
-                params.append(f"{date_from}T00:00:00")
-            if date_to:
-                where_clauses.append("last_visited <= ?")
-                params.append(f"{date_to}T23:59:59")
+            c.execute("SELECT COALESCE(SUM(bio_signals), 0) as sum_bio FROM bodies")
+            stats["total_bio_signals"] = max(stats.get("total_bio_signals", 0), c.fetchone()["sum_bio"])
 
-    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        c.execute("SELECT COUNT(*) as count FROM scanned_organics")
+        stats["total_scanned_organics"] = c.fetchone()["count"]
 
-    c.execute(f"""
-        SELECT 
-            COUNT(*) as total_systems,
-            COALESCE(SUM(visit_count), 0) as total_visits,
-            COALESCE(SUM(scanned_bodies), 0) as total_bodies,
-            COALESCE(SUM(total_potential_value), 0) as total_potential_value,
-            COALESCE(SUM(has_elw), 0) as elw_systems,
-            COALESCE(SUM(has_water_world), 0) as ww_systems,
-            COALESCE(SUM(has_ammonia), 0) as ammonia_systems,
-            COALESCE(SUM(has_terraformable), 0) as terraformable_systems,
-            COALESCE(SUM(has_bio), 0) as bio_systems,
-            COALESCE(SUM(total_bio_signals), 0) as total_bio_signals,
-            COALESCE(SUM(has_landable), 0) as landable_systems,
-            COALESCE(SUM(has_anomalies), 0) as anomaly_systems
-        FROM systems {where_sql}
-    """, params)
-    stats = dict(c.fetchone())
+        try:
+            celestial_stats = get_celestial_statistics(conn)
+            stats["celestial_counts"] = celestial_stats.get("planets", {})
+        except Exception as e:
+            logger.error(f"Failed to get celestial statistics for /api/stats: {e}")
+            stats["celestial_counts"] = {}
 
-    # Bio signals sum in matching systems
-    if where_sql:
-        c.execute(f"SELECT COALESCE(SUM(bio_signals), 0) as sum_bio FROM bodies WHERE system_address IN (SELECT system_address FROM systems {where_sql})", params)
-        stats["total_bio_signals"] = c.fetchone()["sum_bio"]
-    else:
-        c.execute("SELECT COALESCE(SUM(bio_signals), 0) as sum_bio FROM bodies")
-        stats["total_bio_signals"] = max(stats.get("total_bio_signals", 0), c.fetchone()["sum_bio"])
-
-    c.execute("SELECT COUNT(*) as count FROM scanned_organics")
-    stats["total_scanned_organics"] = c.fetchone()["count"]
-
-    try:
-        celestial_stats = get_celestial_statistics(conn)
-        stats["celestial_counts"] = celestial_stats.get("planets", {})
-    except Exception as e:
-        logger.error(f"Failed to get celestial statistics for /api/stats: {e}")
-        stats["celestial_counts"] = {}
-
-    try:
-        stats["current_location"] = get_current_cmdr_location(conn)
-    except Exception:
-        stats["current_location"] = None
-    try:
-        stats["jump_stats"] = get_cmdr_jump_stats(conn)
-    except Exception:
-        stats["jump_stats"] = None
-    stats["app_version"] = APP_VERSION
-    conn.close()
+        try:
+            stats["current_location"] = get_current_cmdr_location(conn)
+        except Exception:
+            stats["current_location"] = None
+        try:
+            stats["jump_stats"] = get_cmdr_jump_stats(conn)
+        except Exception:
+            stats["jump_stats"] = None
+        stats["app_version"] = APP_VERSION
+    finally:
+        conn.close()
     return stats
 
 @app.get("/api/stats/celestial_counts")
@@ -768,506 +819,357 @@ def get_systems(
     limit: int = 50
 ):
     conn = get_db_connection()
-    c = conn.cursor()
+    try:
+        c = conn.cursor()
 
-    c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='codex_entries'")
-    has_codex_tbl = c.fetchone() is not None
-    codex_ggg_check = """
-                OR EXISTS (
-                    SELECT 1 FROM codex_entries ce
-                    WHERE ce.system_address = systems.system_address
-                    AND ce.is_ggg = 1
+        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='codex_entries'")
+        has_codex_tbl = c.fetchone() is not None
+        codex_ggg_check = """
+                    OR EXISTS (
+                        SELECT 1 FROM codex_entries ce
+                        WHERE ce.system_address = systems.system_address
+                        AND ce.is_ggg = 1
+                    )
+        """ if has_codex_tbl else ""
+
+        page = max(1, page or 1)
+        limit = min(500, max(1, limit or 50))
+
+        # Determine CMDR location if not provided
+        cur_loc = get_current_cmdr_location(conn)
+        cx = cmdr_x if cmdr_x is not None else (cur_loc["star_pos_x"] if cur_loc else None)
+        cy = cmdr_y if cmdr_y is not None else (cur_loc["star_pos_y"] if cur_loc else None)
+        cz = cmdr_z if cmdr_z is not None else (cur_loc["star_pos_z"] if cur_loc else None)
+
+        conditions = []
+        params = []
+
+        if q and q.strip():
+            term = f"%{q.strip()}%"
+            conditions.append("""(
+                systems.star_system LIKE ? OR EXISTS (
+                    SELECT 1 FROM body_bookmarks bb 
+                    WHERE bb.system_address = systems.system_address 
+                    AND (bb.alias_name LIKE ? OR bb.note_markdown LIKE ? OR bb.body_name LIKE ?)
                 )
-    """ if has_codex_tbl else ""
+            )""")
+            params.extend([term, term, term, term])
 
-    page = max(1, page or 1)
-    limit = min(500, max(1, limit or 50))
+        c_bm = _parse_filter_min_count(has_bookmarks)
+        if c_bm == 1:
+            conditions.append("EXISTS (SELECT 1 FROM body_bookmarks bb WHERE bb.system_address = systems.system_address)")
+        elif c_bm > 1:
+            conditions.append("""(
+                SELECT COUNT(*) FROM body_bookmarks bb 
+                WHERE bb.system_address = systems.system_address
+            ) >= ?""")
+            params.append(c_bm)
 
-    # Determine CMDR location if not provided
-    cur_loc = get_current_cmdr_location(conn)
-    cx = cmdr_x if cmdr_x is not None else (cur_loc["star_pos_x"] if cur_loc else None)
-    cy = cmdr_y if cmdr_y is not None else (cur_loc["star_pos_y"] if cur_loc else None)
-    cz = cmdr_z if cmdr_z is not None else (cur_loc["star_pos_z"] if cur_loc else None)
+        if _parse_filter_min_count(is_shared):
+            conditions.append("systems.is_shared = 1")
 
-    conditions = []
-    params = []
+        c_elw = _parse_filter_min_count(has_elw)
+        if c_elw == 1:
+            conditions.append("systems.has_elw = 1")
+        elif c_elw > 1:
+            conditions.append("""(
+                SELECT COUNT(*) FROM bodies b 
+                WHERE b.system_address = systems.system_address 
+                AND (LOWER(b.planet_class) LIKE '%earthlike%' OR LOWER(b.planet_class) LIKE '%earth-like%')
+            ) >= ?""")
+            params.append(c_elw)
 
-    if q and q.strip():
-        term = f"%{q.strip()}%"
-        conditions.append("""(
-            systems.star_system LIKE ? OR EXISTS (
-                SELECT 1 FROM body_bookmarks bb 
-                WHERE bb.system_address = systems.system_address 
-                AND (bb.alias_name LIKE ? OR bb.note_markdown LIKE ? OR bb.body_name LIKE ?)
-            )
-        )""")
-        params.extend([term, term, term, term])
+        c_ww = _parse_filter_min_count(has_water_world)
+        if c_ww == 1:
+            conditions.append("systems.has_water_world = 1")
+        elif c_ww > 1:
+            conditions.append("""(
+                SELECT COUNT(*) FROM bodies b 
+                WHERE b.system_address = systems.system_address 
+                AND LOWER(b.planet_class) LIKE '%water world%'
+            ) >= ?""")
+            params.append(c_ww)
 
-    c_bm = _parse_filter_min_count(has_bookmarks)
-    if c_bm == 1:
-        conditions.append("EXISTS (SELECT 1 FROM body_bookmarks bb WHERE bb.system_address = systems.system_address)")
-    elif c_bm > 1:
-        conditions.append("""(
-            SELECT COUNT(*) FROM body_bookmarks bb 
-            WHERE bb.system_address = systems.system_address
-        ) >= ?""")
-        params.append(c_bm)
+        c_aw = _parse_filter_min_count(has_ammonia)
+        if c_aw == 1:
+            conditions.append("systems.has_ammonia = 1")
+        elif c_aw > 1:
+            conditions.append("""(
+                SELECT COUNT(*) FROM bodies b 
+                WHERE b.system_address = systems.system_address 
+                AND LOWER(b.planet_class) LIKE '%ammonia%'
+            ) >= ?""")
+            params.append(c_aw)
 
-    if _parse_filter_min_count(is_shared):
-        conditions.append("systems.is_shared = 1")
+        c_tf = _parse_filter_min_count(has_terraformable)
+        if c_tf == 1:
+            conditions.append("systems.has_terraformable = 1")
+        elif c_tf > 1:
+            conditions.append("""(
+                SELECT COUNT(*) FROM bodies b 
+                WHERE b.system_address = systems.system_address 
+                AND LOWER(b.terraforming_state) LIKE '%terraform%'
+            ) >= ?""")
+            params.append(c_tf)
 
-    c_elw = _parse_filter_min_count(has_elw)
-    if c_elw == 1:
-        conditions.append("systems.has_elw = 1")
-    elif c_elw > 1:
-        conditions.append("""(
-            SELECT COUNT(*) FROM bodies b 
-            WHERE b.system_address = systems.system_address 
-            AND (LOWER(b.planet_class) LIKE '%earthlike%' OR LOWER(b.planet_class) LIKE '%earth-like%')
-        ) >= ?""")
-        params.append(c_elw)
+        c_bio = _parse_filter_min_count(has_bio)
+        if c_bio == 1:
+            conditions.append("systems.has_bio = 1")
+        elif c_bio > 1:
+            conditions.append("systems.total_bio_signals >= ?")
+            params.append(c_bio)
 
-    c_ww = _parse_filter_min_count(has_water_world)
-    if c_ww == 1:
-        conditions.append("systems.has_water_world = 1")
-    elif c_ww > 1:
-        conditions.append("""(
-            SELECT COUNT(*) FROM bodies b 
-            WHERE b.system_address = systems.system_address 
-            AND LOWER(b.planet_class) LIKE '%water world%'
-        ) >= ?""")
-        params.append(c_ww)
+        c_landable = _parse_filter_min_count(has_landable)
+        if c_landable == 1:
+            conditions.append("systems.has_landable = 1")
+        elif c_landable > 1:
+            conditions.append("""(
+                SELECT COUNT(*) FROM bodies b 
+                WHERE b.system_address = systems.system_address 
+                AND b.landable = 1
+            ) >= ?""")
+            params.append(c_landable)
 
-    c_aw = _parse_filter_min_count(has_ammonia)
-    if c_aw == 1:
-        conditions.append("systems.has_ammonia = 1")
-    elif c_aw > 1:
-        conditions.append("""(
-            SELECT COUNT(*) FROM bodies b 
-            WHERE b.system_address = systems.system_address 
-            AND LOWER(b.planet_class) LIKE '%ammonia%'
-        ) >= ?""")
-        params.append(c_aw)
+        # System age (million years); systems with unknown age never match either bound
+        if age_lt_my is not None and age_lt_my > 0:
+            conditions.append("systems.system_age_my IS NOT NULL AND systems.system_age_my < ?")
+            params.append(age_lt_my)
+        if age_gte_my is not None and age_gte_my > 0:
+            conditions.append("systems.system_age_my IS NOT NULL AND systems.system_age_my >= ?")
+            params.append(age_gte_my)
 
-    c_tf = _parse_filter_min_count(has_terraformable)
-    if c_tf == 1:
-        conditions.append("systems.has_terraformable = 1")
-    elif c_tf > 1:
-        conditions.append("""(
-            SELECT COUNT(*) FROM bodies b 
-            WHERE b.system_address = systems.system_address 
-            AND LOWER(b.terraforming_state) LIKE '%terraform%'
-        ) >= ?""")
-        params.append(c_tf)
+        c_hg = _parse_filter_min_count(has_high_g)
+        if c_hg == 1:
+            conditions.append("systems.has_high_g = 1")
+        elif c_hg > 1:
+            conditions.append("""(
+                SELECT COUNT(*) FROM bodies b 
+                WHERE b.system_address = systems.system_address 
+                AND b.landable = 1 AND b.surface_gravity_g >= 3.0
+            ) >= ?""")
+            params.append(c_hg)
 
-    c_bio = _parse_filter_min_count(has_bio)
-    if c_bio == 1:
-        conditions.append("systems.has_bio = 1")
-    elif c_bio > 1:
-        conditions.append("systems.total_bio_signals >= ?")
-        params.append(c_bio)
+        c_anom = _parse_filter_min_count(has_anomalies)
+        if c_anom == 1:
+            conditions.append("systems.has_anomalies = 1")
+        elif c_anom > 1:
+            conditions.append("""(
+                SELECT COUNT(*) FROM bodies b 
+                WHERE b.system_address = systems.system_address 
+                AND b.anomalies_json IS NOT NULL 
+                AND b.anomalies_json != '' 
+                AND b.anomalies_json != '[]'
+            ) >= ?""")
+            params.append(c_anom)
 
-    c_landable = _parse_filter_min_count(has_landable)
-    if c_landable == 1:
-        conditions.append("systems.has_landable = 1")
-    elif c_landable > 1:
-        conditions.append("""(
-            SELECT COUNT(*) FROM bodies b 
-            WHERE b.system_address = systems.system_address 
-            AND b.landable = 1
-        ) >= ?""")
-        params.append(c_landable)
+        c_ggg = _parse_filter_min_count(has_ggg)
+        if c_ggg == 1:
+            conditions.append(f"""EXISTS (
+                SELECT 1 FROM bodies b
+                WHERE b.system_address = systems.system_address
+                AND (
+                    b.anomalies_json LIKE '%Confirmed GGG%'
+                    {codex_ggg_check}
+                )
+            )""")
+        elif c_ggg > 1:
+            conditions.append(f"""(
+                SELECT COUNT(*) FROM bodies b
+                WHERE b.system_address = systems.system_address
+                AND (
+                    b.anomalies_json LIKE '%Confirmed GGG%'
+                    {codex_ggg_check}
+                )
+            ) >= ?""")
+            params.append(c_ggg)
 
-    # System age (million years); systems with unknown age never match either bound
-    if age_lt_my is not None and age_lt_my > 0:
-        conditions.append("systems.system_age_my IS NOT NULL AND systems.system_age_my < ?")
-        params.append(age_lt_my)
-    if age_gte_my is not None and age_gte_my > 0:
-        conditions.append("systems.system_age_my IS NOT NULL AND systems.system_age_my >= ?")
-        params.append(age_gte_my)
+        c_fd = _parse_filter_min_count(has_first_discover)
+        if c_fd == 1:
+            conditions.append("systems.has_first_discover = 1")
+        elif c_fd > 1:
+            conditions.append("systems.first_discovered_bodies >= ?")
+            params.append(c_fd)
 
-    c_hg = _parse_filter_min_count(has_high_g)
-    if c_hg == 1:
-        conditions.append("systems.has_high_g = 1")
-    elif c_hg > 1:
-        conditions.append("""(
-            SELECT COUNT(*) FROM bodies b 
-            WHERE b.system_address = systems.system_address 
-            AND b.landable = 1 AND b.surface_gravity_g >= 3.0
-        ) >= ?""")
-        params.append(c_hg)
-
-    c_anom = _parse_filter_min_count(has_anomalies)
-    if c_anom == 1:
-        conditions.append("systems.has_anomalies = 1")
-    elif c_anom > 1:
-        conditions.append("""(
-            SELECT COUNT(*) FROM bodies b 
-            WHERE b.system_address = systems.system_address 
-            AND b.anomalies_json IS NOT NULL 
-            AND b.anomalies_json != '' 
-            AND b.anomalies_json != '[]'
-        ) >= ?""")
-        params.append(c_anom)
-
-    c_ggg = _parse_filter_min_count(has_ggg)
-    if c_ggg == 1:
-        conditions.append(f"""EXISTS (
-            SELECT 1 FROM bodies b
-            WHERE b.system_address = systems.system_address
-            AND (
-                b.anomalies_json LIKE '%Confirmed GGG%'
-                {codex_ggg_check}
-            )
-        )""")
-    elif c_ggg > 1:
-        conditions.append(f"""(
-            SELECT COUNT(*) FROM bodies b
-            WHERE b.system_address = systems.system_address
-            AND (
-                b.anomalies_json LIKE '%Confirmed GGG%'
-                {codex_ggg_check}
-            )
-        ) >= ?""")
-        params.append(c_ggg)
-
-    c_fd = _parse_filter_min_count(has_first_discover)
-    if c_fd == 1:
-        conditions.append("systems.has_first_discover = 1")
-    elif c_fd > 1:
-        conditions.append("systems.first_discovered_bodies >= ?")
-        params.append(c_fd)
-
-    c_pdss = _parse_filter_min_count(has_partial_dss)
-    if c_pdss >= 1:
-        conditions.append("""(
-            EXISTS (
-                SELECT 1 FROM bodies b1 
-                WHERE b1.system_address = systems.system_address 
-                AND b1.is_mapped_by_user = 1
-            )
-            AND (
+        c_pdss = _parse_filter_min_count(has_partial_dss)
+        if c_pdss >= 1:
+            conditions.append("""(
                 EXISTS (
-                    SELECT 1 FROM bodies b2 
-                    WHERE b2.system_address = systems.system_address 
-                    AND (b2.planet_class IS NOT NULL AND b2.planet_class != '')
-                    AND b2.is_mapped_by_user = 0
+                    SELECT 1 FROM bodies b1 
+                    WHERE b1.system_address = systems.system_address 
+                    AND b1.is_mapped_by_user = 1
                 )
-                OR (
-                    systems.total_bodies > (
-                        SELECT COUNT(*) FROM bodies b3 
-                        WHERE b3.system_address = systems.system_address 
-                        AND b3.is_mapped_by_user = 1
+                AND (
+                    EXISTS (
+                        SELECT 1 FROM bodies b2 
+                        WHERE b2.system_address = systems.system_address 
+                        AND (b2.planet_class IS NOT NULL AND b2.planet_class != '')
+                        AND b2.is_mapped_by_user = 0
+                    )
+                    OR (
+                        systems.total_bodies > (
+                            SELECT COUNT(*) FROM bodies b3 
+                            WHERE b3.system_address = systems.system_address 
+                            AND b3.is_mapped_by_user = 1
+                        )
                     )
                 )
-            )
-        )""")
+            )""")
 
-    # Landable Mining Target Class & Feature Filtering (ignores non-landable bodies)
-    c_hmc = _parse_filter_min_count(has_landable_hmc)
-    if c_hmc == 1:
-        conditions.append("EXISTS (SELECT 1 FROM bodies b WHERE b.system_address = systems.system_address AND b.landable = 1 AND LOWER(b.planet_class) LIKE '%high metal%')")
-    elif c_hmc > 1:
-        conditions.append("""(
-            SELECT COUNT(*) FROM bodies b 
-            WHERE b.system_address = systems.system_address 
-            AND b.landable = 1 AND LOWER(b.planet_class) LIKE '%high metal%'
-        ) >= ?""")
-        params.append(c_hmc)
+        # Landable Mining Target Class & Feature Filtering (ignores non-landable bodies)
+        c_hmc = _parse_filter_min_count(has_landable_hmc)
+        if c_hmc == 1:
+            conditions.append("EXISTS (SELECT 1 FROM bodies b WHERE b.system_address = systems.system_address AND b.landable = 1 AND LOWER(b.planet_class) LIKE '%high metal%')")
+        elif c_hmc > 1:
+            conditions.append("""(
+                SELECT COUNT(*) FROM bodies b 
+                WHERE b.system_address = systems.system_address 
+                AND b.landable = 1 AND LOWER(b.planet_class) LIKE '%high metal%'
+            ) >= ?""")
+            params.append(c_hmc)
 
-    c_mr = _parse_filter_min_count(has_landable_metal_rich)
-    if c_mr == 1:
-        conditions.append("EXISTS (SELECT 1 FROM bodies b WHERE b.system_address = systems.system_address AND b.landable = 1 AND LOWER(b.planet_class) LIKE '%metal rich%')")
-    elif c_mr > 1:
-        conditions.append("""(
-            SELECT COUNT(*) FROM bodies b 
-            WHERE b.system_address = systems.system_address 
-            AND b.landable = 1 AND LOWER(b.planet_class) LIKE '%metal rich%'
-        ) >= ?""")
-        params.append(c_mr)
+        c_mr = _parse_filter_min_count(has_landable_metal_rich)
+        if c_mr == 1:
+            conditions.append("EXISTS (SELECT 1 FROM bodies b WHERE b.system_address = systems.system_address AND b.landable = 1 AND LOWER(b.planet_class) LIKE '%metal rich%')")
+        elif c_mr > 1:
+            conditions.append("""(
+                SELECT COUNT(*) FROM bodies b 
+                WHERE b.system_address = systems.system_address 
+                AND b.landable = 1 AND LOWER(b.planet_class) LIKE '%metal rich%'
+            ) >= ?""")
+            params.append(c_mr)
 
-    c_rocky = _parse_filter_min_count(has_landable_rocky)
-    if c_rocky == 1:
-        conditions.append("EXISTS (SELECT 1 FROM bodies b WHERE b.system_address = systems.system_address AND b.landable = 1 AND LOWER(b.planet_class) LIKE '%rocky body%')")
-    elif c_rocky > 1:
-        conditions.append("""(
-            SELECT COUNT(*) FROM bodies b 
-            WHERE b.system_address = systems.system_address 
-            AND b.landable = 1 AND LOWER(b.planet_class) LIKE '%rocky body%'
-        ) >= ?""")
-        params.append(c_rocky)
+        c_rocky = _parse_filter_min_count(has_landable_rocky)
+        if c_rocky == 1:
+            conditions.append("EXISTS (SELECT 1 FROM bodies b WHERE b.system_address = systems.system_address AND b.landable = 1 AND LOWER(b.planet_class) LIKE '%rocky body%')")
+        elif c_rocky > 1:
+            conditions.append("""(
+                SELECT COUNT(*) FROM bodies b 
+                WHERE b.system_address = systems.system_address 
+                AND b.landable = 1 AND LOWER(b.planet_class) LIKE '%rocky body%'
+            ) >= ?""")
+            params.append(c_rocky)
 
-    c_icy = _parse_filter_min_count(has_landable_icy)
-    if c_icy == 1:
-        conditions.append("EXISTS (SELECT 1 FROM bodies b WHERE b.system_address = systems.system_address AND b.landable = 1 AND LOWER(b.planet_class) LIKE '%icy body%')")
-    elif c_icy > 1:
-        conditions.append("""(
-            SELECT COUNT(*) FROM bodies b 
-            WHERE b.system_address = systems.system_address 
-            AND b.landable = 1 AND LOWER(b.planet_class) LIKE '%icy body%'
-        ) >= ?""")
-        params.append(c_icy)
+        c_icy = _parse_filter_min_count(has_landable_icy)
+        if c_icy == 1:
+            conditions.append("EXISTS (SELECT 1 FROM bodies b WHERE b.system_address = systems.system_address AND b.landable = 1 AND LOWER(b.planet_class) LIKE '%icy body%')")
+        elif c_icy > 1:
+            conditions.append("""(
+                SELECT COUNT(*) FROM bodies b 
+                WHERE b.system_address = systems.system_address 
+                AND b.landable = 1 AND LOWER(b.planet_class) LIKE '%icy body%'
+            ) >= ?""")
+            params.append(c_icy)
 
-    c_rocky_ice = _parse_filter_min_count(has_landable_rocky_ice)
-    if c_rocky_ice == 1:
-        conditions.append("EXISTS (SELECT 1 FROM bodies b WHERE b.system_address = systems.system_address AND b.landable = 1 AND (LOWER(b.planet_class) LIKE '%rocky ice%' OR LOWER(b.planet_class) LIKE '%icy rocky%'))")
-    elif c_rocky_ice > 1:
-        conditions.append("""(
-            SELECT COUNT(*) FROM bodies b 
-            WHERE b.system_address = systems.system_address 
-            AND b.landable = 1 AND (LOWER(b.planet_class) LIKE '%rocky ice%' OR LOWER(b.planet_class) LIKE '%icy rocky%')
-        ) >= ?""")
-        params.append(c_rocky_ice)
+        c_rocky_ice = _parse_filter_min_count(has_landable_rocky_ice)
+        if c_rocky_ice == 1:
+            conditions.append("EXISTS (SELECT 1 FROM bodies b WHERE b.system_address = systems.system_address AND b.landable = 1 AND (LOWER(b.planet_class) LIKE '%rocky ice%' OR LOWER(b.planet_class) LIKE '%icy rocky%'))")
+        elif c_rocky_ice > 1:
+            conditions.append("""(
+                SELECT COUNT(*) FROM bodies b 
+                WHERE b.system_address = systems.system_address 
+                AND b.landable = 1 AND (LOWER(b.planet_class) LIKE '%rocky ice%' OR LOWER(b.planet_class) LIKE '%icy rocky%')
+            ) >= ?""")
+            params.append(c_rocky_ice)
 
-    c_ringed = _parse_filter_min_count(has_landable_ringed)
-    if c_ringed == 1:
-        conditions.append("EXISTS (SELECT 1 FROM bodies b WHERE b.system_address = systems.system_address AND b.landable = 1 AND b.rings IS NOT NULL AND b.rings != '' AND b.rings != '[]' AND b.rings != '\"\"')")
-    elif c_ringed > 1:
-        conditions.append("""(
-            SELECT COUNT(*) FROM bodies b 
-            WHERE b.system_address = systems.system_address 
-            AND b.landable = 1 AND b.rings IS NOT NULL AND b.rings != '' AND b.rings != '[]' AND b.rings != '\"\"'
-        ) >= ?""")
-        params.append(c_ringed)
+        c_ringed = _parse_filter_min_count(has_landable_ringed)
+        if c_ringed == 1:
+            conditions.append("EXISTS (SELECT 1 FROM bodies b WHERE b.system_address = systems.system_address AND b.landable = 1 AND b.rings IS NOT NULL AND b.rings != '' AND b.rings != '[]' AND b.rings != '\"\"')")
+        elif c_ringed > 1:
+            conditions.append("""(
+                SELECT COUNT(*) FROM bodies b 
+                WHERE b.system_address = systems.system_address 
+                AND b.landable = 1 AND b.rings IS NOT NULL AND b.rings != '' AND b.rings != '[]' AND b.rings != '\"\"'
+            ) >= ?""")
+            params.append(c_ringed)
 
-    c_mining_sig = _parse_filter_min_count(has_mining_signals)
-    if c_mining_sig == 1:
-        conditions.append("EXISTS (SELECT 1 FROM bodies b WHERE b.system_address = systems.system_address AND b.mining_signals > 0)")
-    elif c_mining_sig > 1:
-        conditions.append("""(
-            SELECT COUNT(*) FROM bodies b 
-            WHERE b.system_address = systems.system_address 
-            AND b.mining_signals > 0
-        ) >= ?""")
-        params.append(c_mining_sig)
+        c_mining_sig = _parse_filter_min_count(has_mining_signals)
+        if c_mining_sig == 1:
+            conditions.append("EXISTS (SELECT 1 FROM bodies b WHERE b.system_address = systems.system_address AND b.mining_signals > 0)")
+        elif c_mining_sig > 1:
+            conditions.append("""(
+                SELECT COUNT(*) FROM bodies b 
+                WHERE b.system_address = systems.system_address 
+                AND b.mining_signals > 0
+            ) >= ?""")
+            params.append(c_mining_sig)
 
-    # Date range filtering
-    target_date_col = "first_visited" if date_field == "first_visited" else "last_visited"
-    if date_field == "any_visit":
-        visit_conds = ["v.system_address = systems.system_address"]
-        visit_params = []
-        if date_from and date_from.strip():
-            from_ts = date_from.strip() if "T" in date_from else f"{date_from.strip()}T00:00:00"
-            visit_conds.append("v.timestamp >= ?")
-            visit_params.append(from_ts)
-        if date_to and date_to.strip():
-            to_ts = date_to.strip() if "T" in date_to else f"{date_to.strip()}T23:59:59"
-            visit_conds.append("v.timestamp <= ?")
-            visit_params.append(to_ts)
-        if len(visit_conds) > 1:
-            conditions.append(f"EXISTS (SELECT 1 FROM visits v WHERE {' AND '.join(visit_conds)})")
-            params.extend(visit_params)
-    else:
-        if date_from and date_from.strip():
-            from_ts = date_from.strip() if "T" in date_from else f"{date_from.strip()}T00:00:00"
-            conditions.append(f"systems.{target_date_col} >= ?")
-            params.append(from_ts)
-        if date_to and date_to.strip():
-            to_ts = date_to.strip() if "T" in date_to else f"{date_to.strip()}T23:59:59"
-            conditions.append(f"systems.{target_date_col} <= ?")
-            params.append(to_ts)
-
-    # Star Types filtering (Stellar classification multi-search)
-    # Supports "O", "N:2", "M:3", etc.
-    active_star_types = {}
-    if star_types:
-        for st in star_types:
-            for item in str(st).split(","):
-                clean = item.strip()
-                if not clean:
-                    continue
-                if ":" in clean:
-                    k, v = clean.split(":", 1)
-                    k = k.strip()
-                    try:
-                        c_val = max(1, int(v.strip()))
-                    except (ValueError, TypeError):
-                        c_val = 1
-                else:
-                    k = clean
-                    c_val = 1
-                if k and k not in active_star_types:
-                    active_star_types[k] = c_val
-
-    if active_star_types:
-        star_type_sql_map = {
-            "O": "(b.star_type = 'O')",
-            "B": "(b.star_type = 'B' OR b.star_type LIKE 'B_%')",
-            "A": "((b.star_type = 'A' OR b.star_type LIKE 'A_%') AND b.star_type NOT LIKE 'AeBe%')",
-            "F": "(b.star_type = 'F' OR b.star_type LIKE 'F_%')",
-            "G": "(b.star_type = 'G' OR b.star_type LIKE 'G_%')",
-            "K": "(b.star_type = 'K' OR b.star_type LIKE 'K_%')",
-            "M": "(b.star_type = 'M' OR b.star_type LIKE 'M_%')",
-            "L": "(b.star_type = 'L')",
-            "T": "(b.star_type = 'T')",
-            "Y": "(b.star_type = 'Y')",
-            "TTS": "(b.star_type = 'TTS' OR b.star_type LIKE 'TTS%')",
-            "AeBe": "(b.star_type LIKE 'AeBe%')",
-            "W": "(b.star_type LIKE 'W%')",
-            "C": "(b.star_type LIKE 'C%' OR b.star_type = 'S' OR b.star_type = 'MS')",
-            "D": "(b.star_type LIKE 'D%')",
-            "N": "(b.star_type = 'N')",
-            "H": "(b.star_type = 'H' OR b.star_type LIKE '%BlackHole%')",
-        }
-
-        if star_match_mode == "all":
-            for st, min_cnt in active_star_types.items():
-                if st in star_type_sql_map:
-                    expr = star_type_sql_map[st]
-                else:
-                    clean_escaped = st.replace("'", "''")
-                    expr = f"(b.star_type = '{clean_escaped}')"
-
-                if min_cnt == 1:
-                    conditions.append(f"EXISTS (SELECT 1 FROM bodies b WHERE b.system_address = systems.system_address AND {expr})")
-                else:
-                    conditions.append(f"""(
-                        SELECT COUNT(*) FROM bodies b 
-                        WHERE b.system_address = systems.system_address 
-                        AND {expr}
-                    ) >= ?""")
-                    params.append(min_cnt)
+        # Date range filtering
+        target_date_col = "first_visited" if date_field == "first_visited" else "last_visited"
+        if date_field == "any_visit":
+            visit_conds = ["v.system_address = systems.system_address"]
+            visit_params = []
+            if date_from and date_from.strip():
+                from_ts = date_from.strip() if "T" in date_from else f"{date_from.strip()}T00:00:00"
+                visit_conds.append("v.timestamp >= ?")
+                visit_params.append(from_ts)
+            if date_to and date_to.strip():
+                to_ts = date_to.strip() if "T" in date_to else f"{date_to.strip()}T23:59:59"
+                visit_conds.append("v.timestamp <= ?")
+                visit_params.append(to_ts)
+            if len(visit_conds) > 1:
+                conditions.append(f"EXISTS (SELECT 1 FROM visits v WHERE {' AND '.join(visit_conds)})")
+                params.extend(visit_params)
         else:
-            type_or_clauses = []
-            for st, min_cnt in active_star_types.items():
-                if st in star_type_sql_map:
-                    expr = star_type_sql_map[st]
-                else:
-                    clean_escaped = st.replace("'", "''")
-                    expr = f"(b.star_type = '{clean_escaped}')"
+            if date_from and date_from.strip():
+                from_ts = date_from.strip() if "T" in date_from else f"{date_from.strip()}T00:00:00"
+                conditions.append(f"systems.{target_date_col} >= ?")
+                params.append(from_ts)
+            if date_to and date_to.strip():
+                to_ts = date_to.strip() if "T" in date_to else f"{date_to.strip()}T23:59:59"
+                conditions.append(f"systems.{target_date_col} <= ?")
+                params.append(to_ts)
 
-                if min_cnt == 1:
-                    type_or_clauses.append(f"EXISTS (SELECT 1 FROM bodies b WHERE b.system_address = systems.system_address AND {expr})")
-                else:
-                    type_or_clauses.append(f"""(
-                        SELECT COUNT(*) FROM bodies b 
-                        WHERE b.system_address = systems.system_address 
-                        AND {expr}
-                    ) >= ?""")
-                    params.append(min_cnt)
-            if type_or_clauses:
-                combined_or = " OR ".join(type_or_clauses)
-                conditions.append(f"({combined_or})")
-
-    # Luminosity / Evolutionary Stage Filtering (Independent from spectral type)
-    # Supports "I", "V:2", etc.
-    active_lum_classes = {}
-    if luminosity_classes:
-        for lc in luminosity_classes:
-            for item in str(lc).split(","):
-                clean = item.strip()
-                if not clean:
-                    continue
-                if ":" in clean:
-                    k, v = clean.split(":", 1)
-                    k = k.strip()
-                    try:
-                        c_val = max(1, int(v.strip()))
-                    except (ValueError, TypeError):
+        # Star Types filtering (Stellar classification multi-search)
+        # Supports "O", "N:2", "M:3", etc.
+        active_star_types = {}
+        if star_types:
+            for st in star_types:
+                for item in str(st).split(","):
+                    clean = item.strip()
+                    if not clean:
+                        continue
+                    if ":" in clean:
+                        k, v = clean.split(":", 1)
+                        k = k.strip()
+                        try:
+                            c_val = max(1, int(v.strip()))
+                        except (ValueError, TypeError):
+                            c_val = 1
+                    else:
+                        k = clean
                         c_val = 1
-                else:
-                    k = clean
-                    c_val = 1
-                if k and k not in active_lum_classes:
-                    active_lum_classes[k] = c_val
+                    if k and k not in active_star_types:
+                        active_star_types[k] = c_val
 
-    if active_lum_classes:
-        lum_sql_map = {
-            # Supergiants (Ia0, Ia, Ib, Iab, I) - exclude II and IV
-            "I": "(b.luminosity LIKE 'I%' AND b.luminosity NOT LIKE 'II%' AND b.luminosity NOT LIKE 'IV%')",
-            # Bright Giants (II, IIa, IIb, IIab)
-            "II": "(b.luminosity LIKE 'II%')",
-            # Giants (III, IIIa, IIIb, IIIab)
-            "III": "(b.luminosity LIKE 'III%')",
-            # Subgiants (IV, IVa, IVb, IVab)
-            "IV": "(b.luminosity LIKE 'IV%')",
-            # Main Sequence Dwarfs (V, Va, Vb, Vab, Vz) - exclude VI
-            "V": "(b.luminosity LIKE 'V%' AND b.luminosity NOT LIKE 'VI%')",
-            # Subdwarfs (VI)
-            "VI": "(b.luminosity = 'VI' OR b.luminosity LIKE 'VI%')",
-            # Degenerate (VII, White Dwarfs, Neutron, Black Holes)
-            "VII": "(b.luminosity = 'VII' OR b.star_type LIKE 'D%' OR b.star_type = 'N' OR b.star_type = 'H' OR b.star_type LIKE '%BlackHole%')",
-        }
+        if active_star_types:
+            star_type_sql_map = {
+                "O": "(b.star_type = 'O')",
+                "B": "(b.star_type = 'B' OR b.star_type LIKE 'B_%')",
+                "A": "((b.star_type = 'A' OR b.star_type LIKE 'A_%') AND b.star_type NOT LIKE 'AeBe%')",
+                "F": "(b.star_type = 'F' OR b.star_type LIKE 'F_%')",
+                "G": "(b.star_type = 'G' OR b.star_type LIKE 'G_%')",
+                "K": "(b.star_type = 'K' OR b.star_type LIKE 'K_%')",
+                "M": "(b.star_type = 'M' OR b.star_type LIKE 'M_%')",
+                "L": "(b.star_type = 'L')",
+                "T": "(b.star_type = 'T')",
+                "Y": "(b.star_type = 'Y')",
+                "TTS": "(b.star_type = 'TTS' OR b.star_type LIKE 'TTS%')",
+                "AeBe": "(b.star_type LIKE 'AeBe%')",
+                "W": "(b.star_type LIKE 'W%')",
+                "C": "(b.star_type LIKE 'C%' OR b.star_type = 'S' OR b.star_type = 'MS')",
+                "D": "(b.star_type LIKE 'D%')",
+                "N": "(b.star_type = 'N')",
+                "H": "(b.star_type = 'H' OR b.star_type LIKE '%BlackHole%')",
+            }
 
-        if luminosity_match_mode == "all":
-            for lc, min_cnt in active_lum_classes.items():
-                if lc in lum_sql_map:
-                    expr = lum_sql_map[lc]
-                else:
-                    clean_escaped = lc.replace("'", "''")
-                    expr = f"(b.luminosity = '{clean_escaped}')"
+            if star_match_mode == "all":
+                for st, min_cnt in active_star_types.items():
+                    if st in star_type_sql_map:
+                        expr = star_type_sql_map[st]
+                    else:
+                        clean_escaped = st.replace("'", "''")
+                        expr = f"(b.star_type = '{clean_escaped}')"
 
-                if min_cnt == 1:
-                    conditions.append(f"EXISTS (SELECT 1 FROM bodies b WHERE b.system_address = systems.system_address AND {expr})")
-                else:
-                    conditions.append(f"""(
-                        SELECT COUNT(*) FROM bodies b 
-                        WHERE b.system_address = systems.system_address 
-                        AND {expr}
-                    ) >= ?""")
-                    params.append(min_cnt)
-        else:
-            lum_or_clauses = []
-            for lc, min_cnt in active_lum_classes.items():
-                if lc in lum_sql_map:
-                    expr = lum_sql_map[lc]
-                else:
-                    clean_escaped = lc.replace("'", "''")
-                    expr = f"(b.luminosity = '{clean_escaped}')"
-
-                if min_cnt == 1:
-                    lum_or_clauses.append(f"EXISTS (SELECT 1 FROM bodies b WHERE b.system_address = systems.system_address AND {expr})")
-                else:
-                    lum_or_clauses.append(f"""(
-                        SELECT COUNT(*) FROM bodies b 
-                        WHERE b.system_address = systems.system_address 
-                        AND {expr}
-                    ) >= ?""")
-                    params.append(min_cnt)
-            if lum_or_clauses:
-                combined_lum_or = " OR ".join(lum_or_clauses)
-                conditions.append(f"({combined_lum_or})")
-
-    # Celestial Bodies, Orbital & Anomaly Filters (Eccentric, Inclined, Fast, Binary, Rings, etc.)
-    # Supports "eccentric", "ringed:2", etc.
-    active_celestial_filters = {}
-    if celestial_filters:
-        for cf in celestial_filters:
-            for item in str(cf).split(","):
-                clean = item.strip()
-                if not clean:
-                    continue
-                if ":" in clean:
-                    k, v = clean.split(":", 1)
-                    k = k.strip()
-                    try:
-                        c_val = max(1, int(v.strip()))
-                    except (ValueError, TypeError):
-                        c_val = 1
-                else:
-                    k = clean
-                    c_val = 1
-                if k and k not in active_celestial_filters:
-                    active_celestial_filters[k] = c_val
-
-    if active_celestial_filters:
-        celestial_sql_map = {
-            "eccentric": "(b.eccentricity >= 0.5)",
-            "inclined": "(abs(b.orbital_inclination) >= 45.0 OR b.orbital_inclination > 90.0 OR b.orbital_inclination < -90.0)",
-            "fast_orbit": "((b.orbital_period > 0 AND b.orbital_period <= 17280) OR (abs(b.rotation_period) > 0 AND abs(b.rotation_period) <= 7200))",
-            "close_binary": "(b.star_type IS NOT NULL AND ((b.distance_from_arrival_ls > 0 AND b.distance_from_arrival_ls <= 50.0) OR (b.semi_major_axis > 0 AND (b.semi_major_axis / 299792458.0) <= 20.0)))",
-            "hierarchical_binary": "(b.star_type IS NOT NULL AND b.parents LIKE '%Null%Null%')",
-            "ringed": "(b.rings IS NOT NULL AND b.rings != '' AND b.rings != '[]' AND b.rings != '\"\"' AND b.rings LIKE '%Ring%')",
-            "wide_ring": "(b.anomalies_json LIKE '%giant_ring%' OR (b.rings LIKE '%Ring%' AND EXISTS (SELECT 1 FROM json_each(b.rings) WHERE json_extract(value, '$.Name') NOT LIKE '%belt%' AND (json_extract(value, '$.OuterRad') >= 5000000000.0 OR (json_extract(value, '$.OuterRad') - json_extract(value, '$.InnerRad')) >= 1000000000.0))))",
-            "ringed_star": "(b.star_type IS NOT NULL AND b.rings IS NOT NULL AND b.rings != '' AND b.rings != '[]' AND b.rings != '\"\"' AND b.rings LIKE '%Ring%')",
-            "high_g": "(b.landable = 1 AND (b.surface_gravity_g >= 1.5 OR b.surface_gravity >= 14.71))",
-            "volcanism": "(b.volcanism IS NOT NULL AND b.volcanism != '' AND LOWER(b.volcanism) != 'none')",
-        }
-
-        if celestial_match_mode == "all":
-            for cf_key, min_cnt in active_celestial_filters.items():
-                if cf_key in celestial_sql_map:
-                    expr = celestial_sql_map[cf_key]
                     if min_cnt == 1:
                         conditions.append(f"EXISTS (SELECT 1 FROM bodies b WHERE b.system_address = systems.system_address AND {expr})")
                     else:
@@ -1277,159 +1179,400 @@ def get_systems(
                             AND {expr}
                         ) >= ?""")
                         params.append(min_cnt)
-        else:
-            cf_or_clauses = []
-            for cf_key, min_cnt in active_celestial_filters.items():
-                if cf_key in celestial_sql_map:
-                    expr = celestial_sql_map[cf_key]
-                    if min_cnt == 1:
-                        cf_or_clauses.append(f"EXISTS (SELECT 1 FROM bodies b WHERE b.system_address = systems.system_address AND {expr})")
+            else:
+                type_or_clauses = []
+                for st, min_cnt in active_star_types.items():
+                    if st in star_type_sql_map:
+                        expr = star_type_sql_map[st]
                     else:
-                        cf_or_clauses.append(f"""(
+                        clean_escaped = st.replace("'", "''")
+                        expr = f"(b.star_type = '{clean_escaped}')"
+
+                    if min_cnt == 1:
+                        type_or_clauses.append(f"EXISTS (SELECT 1 FROM bodies b WHERE b.system_address = systems.system_address AND {expr})")
+                    else:
+                        type_or_clauses.append(f"""(
                             SELECT COUNT(*) FROM bodies b 
                             WHERE b.system_address = systems.system_address 
                             AND {expr}
                         ) >= ?""")
                         params.append(min_cnt)
-            if cf_or_clauses:
-                combined_or = " OR ".join(cf_or_clauses)
-                conditions.append(f"({combined_or})")
+                if type_or_clauses:
+                    combined_or = " OR ".join(type_or_clauses)
+                    conditions.append(f"({combined_or})")
 
-    if mining_scout:
-        ms = str(mining_scout).strip().lower()
-        if ms == "high":
-            conditions.append("systems.mining_scout_grade = 'High'")
-        elif ms == "medium":
-            conditions.append("systems.mining_scout_grade = 'Medium'")
-        elif ms in ["any", "all", "yes", "true", "1"]:
-            conditions.append("(systems.mining_scout_grade = 'High' OR systems.mining_scout_grade = 'Medium')")
+        # Luminosity / Evolutionary Stage Filtering (Independent from spectral type)
+        # Supports "I", "V:2", etc.
+        active_lum_classes = {}
+        if luminosity_classes:
+            for lc in luminosity_classes:
+                for item in str(lc).split(","):
+                    clean = item.strip()
+                    if not clean:
+                        continue
+                    if ":" in clean:
+                        k, v = clean.split(":", 1)
+                        k = k.strip()
+                        try:
+                            c_val = max(1, int(v.strip()))
+                        except (ValueError, TypeError):
+                            c_val = 1
+                    else:
+                        k = clean
+                        c_val = 1
+                    if k and k not in active_lum_classes:
+                        active_lum_classes[k] = c_val
 
-    if has_large_pad:
-        conditions.append("EXISTS (SELECT 1 FROM stations st WHERE st.system_address = systems.system_address AND st.has_large_pad = 1)")
+        if active_lum_classes:
+            lum_sql_map = {
+                # Supergiants (Ia0, Ia, Ib, Iab, I) - exclude II and IV
+                "I": "(b.luminosity LIKE 'I%' AND b.luminosity NOT LIKE 'II%' AND b.luminosity NOT LIKE 'IV%')",
+                # Bright Giants (II, IIa, IIb, IIab)
+                "II": "(b.luminosity LIKE 'II%')",
+                # Giants (III, IIIa, IIIb, IIIab)
+                "III": "(b.luminosity LIKE 'III%')",
+                # Subgiants (IV, IVa, IVb, IVab)
+                "IV": "(b.luminosity LIKE 'IV%')",
+                # Main Sequence Dwarfs (V, Va, Vb, Vab, Vz) - exclude VI
+                "V": "(b.luminosity LIKE 'V%' AND b.luminosity NOT LIKE 'VI%')",
+                # Subdwarfs (VI)
+                "VI": "(b.luminosity = 'VI' OR b.luminosity LIKE 'VI%')",
+                # Degenerate (VII, White Dwarfs, Neutron, Black Holes)
+                "VII": "(b.luminosity = 'VII' OR b.star_type LIKE 'D%' OR b.star_type = 'N' OR b.star_type = 'H' OR b.star_type LIKE '%BlackHole%')",
+            }
 
-    if max_arrival_dist_ls is not None and max_arrival_dist_ls > 0:
-        conditions.append("""(
-            EXISTS (SELECT 1 FROM bodies b WHERE b.system_address = systems.system_address AND b.distance_from_arrival_ls > 0 AND b.distance_from_arrival_ls <= ?)
-            OR EXISTS (SELECT 1 FROM stations st WHERE st.system_address = systems.system_address AND st.distance_to_arrival_ls > 0 AND st.distance_to_arrival_ls <= ?)
-        )""")
-        params.extend([float(max_arrival_dist_ls), float(max_arrival_dist_ls)])
+            if luminosity_match_mode == "all":
+                for lc, min_cnt in active_lum_classes.items():
+                    if lc in lum_sql_map:
+                        expr = lum_sql_map[lc]
+                    else:
+                        clean_escaped = lc.replace("'", "''")
+                        expr = f"(b.luminosity = '{clean_escaped}')"
 
-    where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
+                    if min_cnt == 1:
+                        conditions.append(f"EXISTS (SELECT 1 FROM bodies b WHERE b.system_address = systems.system_address AND {expr})")
+                    else:
+                        conditions.append(f"""(
+                            SELECT COUNT(*) FROM bodies b 
+                            WHERE b.system_address = systems.system_address 
+                            AND {expr}
+                        ) >= ?""")
+                        params.append(min_cnt)
+            else:
+                lum_or_clauses = []
+                for lc, min_cnt in active_lum_classes.items():
+                    if lc in lum_sql_map:
+                        expr = lum_sql_map[lc]
+                    else:
+                        clean_escaped = lc.replace("'", "''")
+                        expr = f"(b.luminosity = '{clean_escaped}')"
 
-    allowed_sort = {
-        "last_visited": "last_visited",
-        "first_visited": "first_visited",
-        "star_system": "star_system",
-        "total_potential_value": "total_potential_value",
-        "total_fss_value": "total_fss_value",
-        "total_bio_signals": "total_bio_signals",
-        "sol_distance_ly": "sol_distance_ly",
-        "cmdr_distance_ly": "cmdr_distance_ly",
-        "first_discovered_bodies": "first_discovered_bodies",
-        "scanned_bodies": "scanned_bodies",
-        "visit_count": "visit_count",
-        "avg_landable_radius": "avg_landable_radius",
-        "main_star_type": "main_star_type",
-        "rarity_score": "rarity_score"
-    }
+                    if min_cnt == 1:
+                        lum_or_clauses.append(f"EXISTS (SELECT 1 FROM bodies b WHERE b.system_address = systems.system_address AND {expr})")
+                    else:
+                        lum_or_clauses.append(f"""(
+                            SELECT COUNT(*) FROM bodies b 
+                            WHERE b.system_address = systems.system_address 
+                            AND {expr}
+                        ) >= ?""")
+                        params.append(min_cnt)
+                if lum_or_clauses:
+                    combined_lum_or = " OR ".join(lum_or_clauses)
+                    conditions.append(f"({combined_lum_or})")
 
-    # Gather active sort criteria
-    valid_sorts = []
-    for s_col, s_ord in [
-        (sort_by, sort_order),
-        (sort_by_2, sort_order_2),
-        (sort_by_3, sort_order_3)
-    ]:
-        if s_col and s_col in allowed_sort and s_col != "none":
-            if not any(v[0] == s_col for v in valid_sorts):
-                valid_sorts.append((s_col, "asc" if s_ord and s_ord.lower() == "asc" else "desc"))
+        # Celestial Bodies, Orbital & Anomaly Filters (Eccentric, Inclined, Fast, Binary, Rings, etc.)
+        # Supports "eccentric", "ringed:2", etc.
+        active_celestial_filters = {}
+        if celestial_filters:
+            for cf in celestial_filters:
+                for item in str(cf).split(","):
+                    clean = item.strip()
+                    if not clean:
+                        continue
+                    if ":" in clean:
+                        k, v = clean.split(":", 1)
+                        k = k.strip()
+                        try:
+                            c_val = max(1, int(v.strip()))
+                        except (ValueError, TypeError):
+                            c_val = 1
+                    else:
+                        k = clean
+                        c_val = 1
+                    if k and k not in active_celestial_filters:
+                        active_celestial_filters[k] = c_val
 
-    if not valid_sorts:
-        valid_sorts = [("total_potential_value", "desc")]
+        if active_celestial_filters:
+            celestial_sql_map = {
+                "eccentric": "(b.eccentricity >= 0.5)",
+                "inclined": "(abs(b.orbital_inclination) >= 45.0 OR b.orbital_inclination > 90.0 OR b.orbital_inclination < -90.0)",
+                "fast_orbit": "((b.orbital_period > 0 AND b.orbital_period <= 17280) OR (abs(b.rotation_period) > 0 AND abs(b.rotation_period) <= 7200))",
+                "close_binary": "(b.star_type IS NOT NULL AND ((b.distance_from_arrival_ls > 0 AND b.distance_from_arrival_ls <= 50.0) OR (b.semi_major_axis > 0 AND (b.semi_major_axis / 299792458.0) <= 20.0)))",
+                "hierarchical_binary": "(b.star_type IS NOT NULL AND b.parents LIKE '%Null%Null%')",
+                "ringed": "(b.rings IS NOT NULL AND b.rings != '' AND b.rings != '[]' AND b.rings != '\"\"' AND b.rings LIKE '%Ring%')",
+                "wide_ring": "(b.anomalies_json LIKE '%giant_ring%' OR (b.rings LIKE '%Ring%' AND EXISTS (SELECT 1 FROM json_each(b.rings) WHERE json_extract(value, '$.Name') NOT LIKE '%belt%' AND (json_extract(value, '$.OuterRad') >= 5000000000.0 OR (json_extract(value, '$.OuterRad') - json_extract(value, '$.InnerRad')) >= 1000000000.0))))",
+                "ringed_star": "(b.star_type IS NOT NULL AND b.rings IS NOT NULL AND b.rings != '' AND b.rings != '[]' AND b.rings != '\"\"' AND b.rings LIKE '%Ring%')",
+                "high_g": "(b.landable = 1 AND (b.surface_gravity_g >= 1.5 OR b.surface_gravity >= 14.71))",
+                "volcanism": "(b.volcanism IS NOT NULL AND b.volcanism != '' AND LOWER(b.volcanism) != 'none')",
+            }
 
-    # Count total matching systems
-    c.execute(f"SELECT COUNT(*) as cnt FROM systems {where_clause}", params)
-    total_count = c.fetchone()["cnt"]
+            if celestial_match_mode == "all":
+                for cf_key, min_cnt in active_celestial_filters.items():
+                    if cf_key in celestial_sql_map:
+                        expr = celestial_sql_map[cf_key]
+                        if min_cnt == 1:
+                            conditions.append(f"EXISTS (SELECT 1 FROM bodies b WHERE b.system_address = systems.system_address AND {expr})")
+                        else:
+                            conditions.append(f"""(
+                                SELECT COUNT(*) FROM bodies b 
+                                WHERE b.system_address = systems.system_address 
+                                AND {expr}
+                            ) >= ?""")
+                            params.append(min_cnt)
+            else:
+                cf_or_clauses = []
+                for cf_key, min_cnt in active_celestial_filters.items():
+                    if cf_key in celestial_sql_map:
+                        expr = celestial_sql_map[cf_key]
+                        if min_cnt == 1:
+                            cf_or_clauses.append(f"EXISTS (SELECT 1 FROM bodies b WHERE b.system_address = systems.system_address AND {expr})")
+                        else:
+                            cf_or_clauses.append(f"""(
+                                SELECT COUNT(*) FROM bodies b 
+                                WHERE b.system_address = systems.system_address 
+                                AND {expr}
+                            ) >= ?""")
+                            params.append(min_cnt)
+                if cf_or_clauses:
+                    combined_or = " OR ".join(cf_or_clauses)
+                    conditions.append(f"({combined_or})")
 
-    offset = (page - 1) * limit
+        if mining_scout:
+            ms = str(mining_scout).strip().lower()
+            if ms == "high":
+                conditions.append("systems.mining_scout_grade = 'High'")
+            elif ms == "medium":
+                conditions.append("systems.mining_scout_grade = 'Medium'")
+            elif ms in ["any", "all", "yes", "true", "1"]:
+                conditions.append("(systems.mining_scout_grade = 'High' OR systems.mining_scout_grade = 'Medium')")
 
-    # CMDR Distance expression
-    cmdr_dist_expr = "NULL"
-    dist_params = []
-    if cx is not None and cy is not None and cz is not None:
-        cmdr_dist_expr = "CASE WHEN star_pos_x IS NOT NULL THEN ROUND(SQRT((star_pos_x - ?)*(star_pos_x - ?)+(star_pos_y - ?)*(star_pos_y - ?)+(star_pos_z - ?)*(star_pos_z - ?)), 1) ELSE NULL END"
-        dist_params = [cx, cx, cy, cy, cz, cz]
+        if has_large_pad:
+            conditions.append("EXISTS (SELECT 1 FROM stations st WHERE st.system_address = systems.system_address AND st.has_large_pad = 1)")
 
-    is_composite_mode = (sort_mode == "composite")
+        if max_arrival_dist_ls is not None and max_arrival_dist_ls > 0:
+            conditions.append("""(
+                EXISTS (SELECT 1 FROM bodies b WHERE b.system_address = systems.system_address AND b.distance_from_arrival_ls > 0 AND b.distance_from_arrival_ls <= ?)
+                OR EXISTS (SELECT 1 FROM stations st WHERE st.system_address = systems.system_address AND st.distance_to_arrival_ls > 0 AND st.distance_to_arrival_ls <= ?)
+            )""")
+            params.extend([float(max_arrival_dist_ls), float(max_arrival_dist_ls)])
 
-    if is_composite_mode and len(valid_sorts) > 1:
-        # Weighted Composite Scoring (Method B)
-        # Allocate weights based on number of active criteria
-        if len(valid_sorts) == 2:
-            weights = [0.65, 0.35]
+        where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
+
+        allowed_sort = {
+            "last_visited": "last_visited",
+            "first_visited": "first_visited",
+            "star_system": "star_system",
+            "total_potential_value": "total_potential_value",
+            "total_fss_value": "total_fss_value",
+            "total_bio_signals": "total_bio_signals",
+            "sol_distance_ly": "sol_distance_ly",
+            "cmdr_distance_ly": "cmdr_distance_ly",
+            "first_discovered_bodies": "first_discovered_bodies",
+            "scanned_bodies": "scanned_bodies",
+            "visit_count": "visit_count",
+            "avg_landable_radius": "avg_landable_radius",
+            "main_star_type": "main_star_type",
+            "rarity_score": "rarity_score"
+        }
+
+        # Gather active sort criteria
+        valid_sorts = []
+        for s_col, s_ord in [
+            (sort_by, sort_order),
+            (sort_by_2, sort_order_2),
+            (sort_by_3, sort_order_3)
+        ]:
+            if s_col and s_col in allowed_sort and s_col != "none":
+                if not any(v[0] == s_col for v in valid_sorts):
+                    valid_sorts.append((s_col, "asc" if s_ord and s_ord.lower() == "asc" else "desc"))
+
+        if not valid_sorts:
+            valid_sorts = [("total_potential_value", "desc")]
+
+        # Count total matching systems
+        c.execute(f"SELECT COUNT(*) as cnt FROM systems {where_clause}", params)
+        total_count = c.fetchone()["cnt"]
+
+        offset = (page - 1) * limit
+
+        # CMDR Distance expression
+        cmdr_dist_expr = "NULL"
+        dist_params = []
+        if cx is not None and cy is not None and cz is not None:
+            cmdr_dist_expr = "CASE WHEN star_pos_x IS NOT NULL THEN ROUND(SQRT((star_pos_x - ?)*(star_pos_x - ?)+(star_pos_y - ?)*(star_pos_y - ?)+(star_pos_z - ?)*(star_pos_z - ?)), 1) ELSE NULL END"
+            dist_params = [cx, cx, cy, cy, cz, cz]
+
+        is_composite_mode = (sort_mode == "composite")
+
+        if is_composite_mode and len(valid_sorts) > 1:
+            # Weighted Composite Scoring (Method B)
+            # Allocate weights based on number of active criteria
+            if len(valid_sorts) == 2:
+                weights = [0.65, 0.35]
+            else:
+                weights = [0.50, 0.35, 0.15]
+
+            def get_score_subexpr(col_name: str, direction: str) -> str:
+                if col_name == "total_potential_value":
+                    return "CASE WHEN stats.max_val > stats.min_val THEN (base.total_potential_value - stats.min_val) * 1.0 / (stats.max_val - stats.min_val) ELSE 1.0 END" if direction == "desc" else "CASE WHEN stats.max_val > stats.min_val THEN (stats.max_val - base.total_potential_value) * 1.0 / (stats.max_val - stats.min_val) ELSE 1.0 END"
+                elif col_name == "total_fss_value":
+                    return "CASE WHEN stats.max_fss > stats.min_fss THEN (base.total_fss_value - stats.min_fss) * 1.0 / (stats.max_fss - stats.min_fss) ELSE 1.0 END" if direction == "desc" else "CASE WHEN stats.max_fss > stats.min_fss THEN (stats.max_fss - base.total_fss_value) * 1.0 / (stats.max_fss - stats.min_fss) ELSE 1.0 END"
+                elif col_name == "total_bio_signals":
+                    return "CASE WHEN stats.max_bio > stats.min_bio THEN (base.total_bio_signals - stats.min_bio) * 1.0 / (stats.max_bio - stats.min_bio) ELSE (CASE WHEN base.total_bio_signals > 0 THEN 1.0 ELSE 0.0 END) END" if direction == "desc" else "CASE WHEN stats.max_bio > stats.min_bio THEN (stats.max_bio - base.total_bio_signals) * 1.0 / (stats.max_bio - stats.min_bio) ELSE 1.0 END"
+                elif col_name == "first_discovered_bodies":
+                    return "CASE WHEN stats.max_fd > stats.min_fd THEN (base.first_discovered_bodies - stats.min_fd) * 1.0 / (stats.max_fd - stats.min_fd) ELSE (CASE WHEN base.first_discovered_bodies > 0 THEN 1.0 ELSE 0.0 END) END" if direction == "desc" else "CASE WHEN stats.max_fd > stats.min_fd THEN (stats.max_fd - base.first_discovered_bodies) * 1.0 / (stats.max_fd - stats.min_fd) ELSE 1.0 END"
+                elif col_name == "cmdr_distance_ly":
+                    return "CASE WHEN base.cmdr_distance_ly IS NOT NULL AND stats.max_cmdr > stats.min_cmdr THEN (stats.max_cmdr - base.cmdr_distance_ly) * 1.0 / (stats.max_cmdr - stats.min_cmdr) WHEN base.cmdr_distance_ly IS NOT NULL THEN 1.0 ELSE 0.0 END" if direction == "asc" else "CASE WHEN base.cmdr_distance_ly IS NOT NULL AND stats.max_cmdr > stats.min_cmdr THEN (base.cmdr_distance_ly - stats.min_cmdr) * 1.0 / (stats.max_cmdr - stats.min_cmdr) WHEN base.cmdr_distance_ly IS NOT NULL THEN 1.0 ELSE 0.0 END"
+                elif col_name == "sol_distance_ly":
+                    return "CASE WHEN stats.max_sol > stats.min_sol THEN (stats.max_sol - base.sol_distance_ly) * 1.0 / (stats.max_sol - stats.min_sol) ELSE 1.0 END" if direction == "asc" else "CASE WHEN stats.max_sol > stats.min_sol THEN (base.sol_distance_ly - stats.min_sol) * 1.0 / (stats.max_sol - stats.min_sol) ELSE 1.0 END"
+                elif col_name == "avg_landable_radius":
+                    return "CASE WHEN base.avg_landable_radius > 0 AND stats.max_rad > stats.min_rad THEN (base.avg_landable_radius - stats.min_rad) * 1.0 / (stats.max_rad - stats.min_rad) WHEN base.avg_landable_radius > 0 THEN 1.0 ELSE 0.0 END" if direction == "desc" else "CASE WHEN base.avg_landable_radius > 0 AND stats.max_rad > stats.min_rad THEN (stats.max_rad - base.avg_landable_radius) * 1.0 / (stats.max_rad - stats.min_rad) WHEN base.avg_landable_radius > 0 THEN 1.0 ELSE 0.0 END"
+                elif col_name == "scanned_bodies":
+                    return "CASE WHEN stats.max_sb > stats.min_sb THEN (base.scanned_bodies - stats.min_sb) * 1.0 / (stats.max_sb - stats.min_sb) ELSE 1.0 END" if direction == "desc" else "CASE WHEN stats.max_sb > stats.min_sb THEN (stats.max_sb - base.scanned_bodies) * 1.0 / (stats.max_sb - stats.min_sb) ELSE 1.0 END"
+                elif col_name == "visit_count":
+                    return "CASE WHEN stats.max_vc > stats.min_vc THEN (base.visit_count - stats.min_vc) * 1.0 / (stats.max_vc - stats.min_vc) ELSE 1.0 END" if direction == "desc" else "CASE WHEN stats.max_vc > stats.min_vc THEN (stats.max_vc - base.visit_count) * 1.0 / (stats.max_vc - stats.min_vc) ELSE 1.0 END"
+                elif col_name in ["last_visited", "first_visited"]:
+                    col = "last_visited" if col_name == "last_visited" else "first_visited"
+                    return f"CASE WHEN stats.max_{col} > stats.min_{col} THEN (julianday(base.{col}) - stats.min_{col}) * 1.0 / (stats.max_{col} - stats.min_{col}) ELSE 1.0 END" if direction == "desc" else f"CASE WHEN stats.max_{col} > stats.min_{col} THEN (stats.max_{col} - julianday(base.{col})) * 1.0 / (stats.max_{col} - stats.min_{col}) ELSE 1.0 END"
+                elif col_name == "rarity_score":
+                    return "CASE WHEN stats.max_rarity > stats.min_rarity THEN (COALESCE(base.rarity_score, 10.0) - stats.min_rarity) * 1.0 / (stats.max_rarity - stats.min_rarity) ELSE 1.0 END" if direction == "desc" else "CASE WHEN stats.max_rarity > stats.min_rarity THEN (stats.max_rarity - COALESCE(base.rarity_score, 10.0)) * 1.0 / (stats.max_rarity - stats.min_rarity) ELSE 1.0 END"
+                elif col_name == "main_star_type":
+                    spectral_score = """
+                        CASE 
+                            WHEN base.main_star_type = 'O' THEN 10.0
+                            WHEN base.main_star_type LIKE 'B%' THEN 20.0
+                            WHEN base.main_star_type LIKE 'A%' AND base.main_star_type NOT LIKE 'AeBe%' THEN 30.0
+                            WHEN base.main_star_type LIKE 'F%' THEN 40.0
+                            WHEN base.main_star_type LIKE 'G%' THEN 50.0
+                            WHEN base.main_star_type LIKE 'K%' THEN 60.0
+                            WHEN base.main_star_type LIKE 'M%' AND base.main_star_type != 'MS' THEN 70.0
+                            WHEN base.main_star_type = 'L' THEN 80.0
+                            WHEN base.main_star_type = 'T' THEN 90.0
+                            WHEN base.main_star_type = 'Y' THEN 100.0
+                            WHEN base.main_star_type LIKE 'TTS%' THEN 110.0
+                            WHEN base.main_star_type LIKE 'AeBe%' THEN 120.0
+                            WHEN base.main_star_type LIKE 'W%' THEN 130.0
+                            WHEN base.main_star_type LIKE 'C%' OR base.main_star_type IN ('S', 'MS') THEN 140.0
+                            WHEN base.main_star_type LIKE 'D%' THEN 150.0
+                            WHEN base.main_star_type = 'N' THEN 160.0
+                            WHEN base.main_star_type = 'H' OR base.main_star_type LIKE '%BlackHole%' THEN 170.0
+                            ELSE 100.0
+                        END
+                    """
+                    return f"((170.0 - ({spectral_score})) / 160.0)" if direction == "asc" else f"((({spectral_score}) - 10.0) / 160.0)"
+                return "0.0"
+
+            score_terms = []
+            for i, (col, direction) in enumerate(valid_sorts):
+                w = weights[i]
+                sub = get_score_subexpr(col, direction)
+                score_terms.append(f"({sub}) * {w}")
+
+            score_formula = " + ".join(score_terms)
+
+            select_sql = f"""
+                WITH base AS (
+                    SELECT 
+                        systems.*,
+                        (SELECT b.luminosity FROM bodies b WHERE b.system_address = systems.system_address AND b.star_type IS NOT NULL ORDER BY b.distance_from_arrival_ls ASC, b.body_id ASC LIMIT 1) AS main_star_luminosity,
+                        COALESCE(systems.main_star_subclass, (SELECT b.subclass FROM bodies b WHERE b.system_address = systems.system_address AND b.star_type IS NOT NULL AND b.subclass IS NOT NULL ORDER BY b.distance_from_arrival_ls ASC, b.body_id ASC LIMIT 1)) AS _calc_main_star_subclass,
+                        (SELECT b.absolute_magnitude FROM bodies b WHERE b.system_address = systems.system_address AND b.star_type IS NOT NULL ORDER BY b.distance_from_arrival_ls ASC, b.body_id ASC LIMIT 1) AS main_star_absolute_magnitude,
+                        COALESCE(systems.system_age_my, (SELECT b.age_my FROM bodies b WHERE b.system_address = systems.system_address AND b.star_type IS NOT NULL AND b.age_my IS NOT NULL ORDER BY b.distance_from_arrival_ls ASC, b.body_id ASC LIMIT 1)) AS _calc_system_age_my,
+                        COALESCE(systems.main_star_mass, (SELECT b.stellar_mass FROM bodies b WHERE b.system_address = systems.system_address AND b.star_type IS NOT NULL AND b.stellar_mass IS NOT NULL ORDER BY b.distance_from_arrival_ls ASC, b.body_id ASC LIMIT 1)) AS _calc_main_star_mass,
+                        COALESCE(systems.total_system_mass, (SELECT (COALESCE(SUM(b.stellar_mass), 0.0) + COALESCE(SUM(b.mass_em) / 332946.0487, 0.0)) FROM bodies b WHERE b.system_address = systems.system_address AND (b.stellar_mass IS NOT NULL OR b.mass_em IS NOT NULL))) AS _calc_total_system_mass,
+                        pe.rarity_score,
+                        {cmdr_dist_expr} AS cmdr_distance_ly,
+                        EXISTS (
+                            SELECT 1 FROM bodies b
+                            WHERE b.system_address = systems.system_address
+                            AND (
+                                b.anomalies_json LIKE '%Confirmed GGG%'
+                                {codex_ggg_check}
+                            )
+                        ) AS has_ggg
+                    FROM systems
+                    LEFT JOIN system_physics_evaluations pe ON systems.system_address = pe.system_address
+                    {where_clause}
+                ),
+                stats AS (
+                    SELECT 
+                        COALESCE(MIN(total_potential_value), 0) AS min_val, COALESCE(MAX(total_potential_value), 0) AS max_val,
+                        COALESCE(MIN(total_fss_value), 0) AS min_fss, COALESCE(MAX(total_fss_value), 0) AS max_fss,
+                        COALESCE(MIN(total_bio_signals), 0) AS min_bio, COALESCE(MAX(total_bio_signals), 0) AS max_bio,
+                        COALESCE(MIN(first_discovered_bodies), 0) AS min_fd, COALESCE(MAX(first_discovered_bodies), 0) AS max_fd,
+                        COALESCE(MIN(cmdr_distance_ly), 0) AS min_cmdr, COALESCE(MAX(cmdr_distance_ly), 0) AS max_cmdr,
+                        COALESCE(MIN(sol_distance_ly), 0) AS min_sol, COALESCE(MAX(sol_distance_ly), 0) AS max_sol,
+                        COALESCE(MIN(CASE WHEN avg_landable_radius > 0 THEN avg_landable_radius ELSE NULL END), 0) AS min_rad,
+                        COALESCE(MAX(CASE WHEN avg_landable_radius > 0 THEN avg_landable_radius ELSE NULL END), 0) AS max_rad,
+                        COALESCE(MIN(scanned_bodies), 0) AS min_sb, COALESCE(MAX(scanned_bodies), 0) AS max_sb,
+                        COALESCE(MIN(visit_count), 0) AS min_vc, COALESCE(MAX(visit_count), 0) AS max_vc,
+                        COALESCE(MIN(COALESCE(rarity_score, 10.0)), 10.0) AS min_rarity, COALESCE(MAX(COALESCE(rarity_score, 10.0)), 10.0) AS max_rarity,
+                        COALESCE(MIN(julianday(last_visited)), 0) AS min_last_visited, COALESCE(MAX(julianday(last_visited)), 0) AS max_last_visited,
+                        COALESCE(MIN(julianday(first_visited)), 0) AS min_first_visited, COALESCE(MAX(julianday(first_visited)), 0) AS max_first_visited
+                    FROM base
+                )
+                SELECT 
+                    base.*,
+                    ROUND(({score_formula}) * 100.0, 1) AS composite_score
+                FROM base, stats
+                ORDER BY composite_score DESC, base.total_potential_value DESC, base.star_system ASC
+                LIMIT ? OFFSET ?
+            """
+            c.execute(select_sql, dist_params + params + [limit, offset])
         else:
-            weights = [0.50, 0.35, 0.15]
+            # Strict hierarchical multi-column sorting (Method A / Standard)
+            def build_order_clause(col_name, direction):
+                if col_name == "cmdr_distance_ly":
+                    return f"cmdr_distance_ly IS NULL ASC, cmdr_distance_ly {direction.upper()}"
+                if col_name == "avg_landable_radius":
+                    return f"(avg_landable_radius IS NULL OR avg_landable_radius = 0) ASC, avg_landable_radius {direction.upper()}"
+                if col_name == "main_star_type":
+                    spectral_order = """
+                        CASE 
+                            WHEN main_star_type = 'O' THEN 10
+                            WHEN main_star_type LIKE 'B%' THEN 20
+                            WHEN main_star_type LIKE 'A%' AND main_star_type NOT LIKE 'AeBe%' THEN 30
+                            WHEN main_star_type LIKE 'F%' THEN 40
+                            WHEN main_star_type LIKE 'G%' THEN 50
+                            WHEN main_star_type LIKE 'K%' THEN 60
+                            WHEN main_star_type LIKE 'M%' AND main_star_type != 'MS' THEN 70
+                            WHEN main_star_type = 'L' THEN 80
+                            WHEN main_star_type = 'T' THEN 90
+                            WHEN main_star_type = 'Y' THEN 100
+                            WHEN main_star_type LIKE 'TTS%' THEN 110
+                            WHEN main_star_type LIKE 'AeBe%' THEN 120
+                            WHEN main_star_type LIKE 'W%' THEN 130
+                            WHEN main_star_type LIKE 'C%' OR main_star_type IN ('S', 'MS') THEN 140
+                            WHEN main_star_type LIKE 'D%' THEN 150
+                            WHEN main_star_type = 'N' THEN 160
+                            WHEN main_star_type = 'H' OR main_star_type LIKE '%BlackHole%' THEN 170
+                            ELSE 999
+                        END
+                    """
+                    return f"(main_star_type IS NULL OR main_star_type = '') ASC, {spectral_order} {direction.upper()}, main_star_type {direction.upper()}"
+                if col_name == "rarity_score":
+                    return f"COALESCE(pe.rarity_score, 10.0) {direction.upper()}"
+                return f"systems.{col_name} {direction.upper()}"
 
-        def get_score_subexpr(col_name: str, direction: str) -> str:
-            if col_name == "total_potential_value":
-                return "CASE WHEN stats.max_val > stats.min_val THEN (base.total_potential_value - stats.min_val) * 1.0 / (stats.max_val - stats.min_val) ELSE 1.0 END" if direction == "desc" else "CASE WHEN stats.max_val > stats.min_val THEN (stats.max_val - base.total_potential_value) * 1.0 / (stats.max_val - stats.min_val) ELSE 1.0 END"
-            elif col_name == "total_fss_value":
-                return "CASE WHEN stats.max_fss > stats.min_fss THEN (base.total_fss_value - stats.min_fss) * 1.0 / (stats.max_fss - stats.min_fss) ELSE 1.0 END" if direction == "desc" else "CASE WHEN stats.max_fss > stats.min_fss THEN (stats.max_fss - base.total_fss_value) * 1.0 / (stats.max_fss - stats.min_fss) ELSE 1.0 END"
-            elif col_name == "total_bio_signals":
-                return "CASE WHEN stats.max_bio > stats.min_bio THEN (base.total_bio_signals - stats.min_bio) * 1.0 / (stats.max_bio - stats.min_bio) ELSE (CASE WHEN base.total_bio_signals > 0 THEN 1.0 ELSE 0.0 END) END" if direction == "desc" else "CASE WHEN stats.max_bio > stats.min_bio THEN (stats.max_bio - base.total_bio_signals) * 1.0 / (stats.max_bio - stats.min_bio) ELSE 1.0 END"
-            elif col_name == "first_discovered_bodies":
-                return "CASE WHEN stats.max_fd > stats.min_fd THEN (base.first_discovered_bodies - stats.min_fd) * 1.0 / (stats.max_fd - stats.min_fd) ELSE (CASE WHEN base.first_discovered_bodies > 0 THEN 1.0 ELSE 0.0 END) END" if direction == "desc" else "CASE WHEN stats.max_fd > stats.min_fd THEN (stats.max_fd - base.first_discovered_bodies) * 1.0 / (stats.max_fd - stats.min_fd) ELSE 1.0 END"
-            elif col_name == "cmdr_distance_ly":
-                return "CASE WHEN base.cmdr_distance_ly IS NOT NULL AND stats.max_cmdr > stats.min_cmdr THEN (stats.max_cmdr - base.cmdr_distance_ly) * 1.0 / (stats.max_cmdr - stats.min_cmdr) WHEN base.cmdr_distance_ly IS NOT NULL THEN 1.0 ELSE 0.0 END" if direction == "asc" else "CASE WHEN base.cmdr_distance_ly IS NOT NULL AND stats.max_cmdr > stats.min_cmdr THEN (base.cmdr_distance_ly - stats.min_cmdr) * 1.0 / (stats.max_cmdr - stats.min_cmdr) WHEN base.cmdr_distance_ly IS NOT NULL THEN 1.0 ELSE 0.0 END"
-            elif col_name == "sol_distance_ly":
-                return "CASE WHEN stats.max_sol > stats.min_sol THEN (stats.max_sol - base.sol_distance_ly) * 1.0 / (stats.max_sol - stats.min_sol) ELSE 1.0 END" if direction == "asc" else "CASE WHEN stats.max_sol > stats.min_sol THEN (base.sol_distance_ly - stats.min_sol) * 1.0 / (stats.max_sol - stats.min_sol) ELSE 1.0 END"
-            elif col_name == "avg_landable_radius":
-                return "CASE WHEN base.avg_landable_radius > 0 AND stats.max_rad > stats.min_rad THEN (base.avg_landable_radius - stats.min_rad) * 1.0 / (stats.max_rad - stats.min_rad) WHEN base.avg_landable_radius > 0 THEN 1.0 ELSE 0.0 END" if direction == "desc" else "CASE WHEN base.avg_landable_radius > 0 AND stats.max_rad > stats.min_rad THEN (stats.max_rad - base.avg_landable_radius) * 1.0 / (stats.max_rad - stats.min_rad) WHEN base.avg_landable_radius > 0 THEN 1.0 ELSE 0.0 END"
-            elif col_name == "scanned_bodies":
-                return "CASE WHEN stats.max_sb > stats.min_sb THEN (base.scanned_bodies - stats.min_sb) * 1.0 / (stats.max_sb - stats.min_sb) ELSE 1.0 END" if direction == "desc" else "CASE WHEN stats.max_sb > stats.min_sb THEN (stats.max_sb - base.scanned_bodies) * 1.0 / (stats.max_sb - stats.min_sb) ELSE 1.0 END"
-            elif col_name == "visit_count":
-                return "CASE WHEN stats.max_vc > stats.min_vc THEN (base.visit_count - stats.min_vc) * 1.0 / (stats.max_vc - stats.min_vc) ELSE 1.0 END" if direction == "desc" else "CASE WHEN stats.max_vc > stats.min_vc THEN (stats.max_vc - base.visit_count) * 1.0 / (stats.max_vc - stats.min_vc) ELSE 1.0 END"
-            elif col_name in ["last_visited", "first_visited"]:
-                col = "last_visited" if col_name == "last_visited" else "first_visited"
-                return f"CASE WHEN stats.max_{col} > stats.min_{col} THEN (julianday(base.{col}) - stats.min_{col}) * 1.0 / (stats.max_{col} - stats.min_{col}) ELSE 1.0 END" if direction == "desc" else f"CASE WHEN stats.max_{col} > stats.min_{col} THEN (stats.max_{col} - julianday(base.{col})) * 1.0 / (stats.max_{col} - stats.min_{col}) ELSE 1.0 END"
-            elif col_name == "rarity_score":
-                return "CASE WHEN stats.max_rarity > stats.min_rarity THEN (COALESCE(base.rarity_score, 10.0) - stats.min_rarity) * 1.0 / (stats.max_rarity - stats.min_rarity) ELSE 1.0 END" if direction == "desc" else "CASE WHEN stats.max_rarity > stats.min_rarity THEN (stats.max_rarity - COALESCE(base.rarity_score, 10.0)) * 1.0 / (stats.max_rarity - stats.min_rarity) ELSE 1.0 END"
-            elif col_name == "main_star_type":
-                spectral_score = """
-                    CASE 
-                        WHEN base.main_star_type = 'O' THEN 10.0
-                        WHEN base.main_star_type LIKE 'B%' THEN 20.0
-                        WHEN base.main_star_type LIKE 'A%' AND base.main_star_type NOT LIKE 'AeBe%' THEN 30.0
-                        WHEN base.main_star_type LIKE 'F%' THEN 40.0
-                        WHEN base.main_star_type LIKE 'G%' THEN 50.0
-                        WHEN base.main_star_type LIKE 'K%' THEN 60.0
-                        WHEN base.main_star_type LIKE 'M%' AND base.main_star_type != 'MS' THEN 70.0
-                        WHEN base.main_star_type = 'L' THEN 80.0
-                        WHEN base.main_star_type = 'T' THEN 90.0
-                        WHEN base.main_star_type = 'Y' THEN 100.0
-                        WHEN base.main_star_type LIKE 'TTS%' THEN 110.0
-                        WHEN base.main_star_type LIKE 'AeBe%' THEN 120.0
-                        WHEN base.main_star_type LIKE 'W%' THEN 130.0
-                        WHEN base.main_star_type LIKE 'C%' OR base.main_star_type IN ('S', 'MS') THEN 140.0
-                        WHEN base.main_star_type LIKE 'D%' THEN 150.0
-                        WHEN base.main_star_type = 'N' THEN 160.0
-                        WHEN base.main_star_type = 'H' OR base.main_star_type LIKE '%BlackHole%' THEN 170.0
-                        ELSE 100.0
-                    END
-                """
-                return f"((170.0 - ({spectral_score})) / 160.0)" if direction == "asc" else f"((({spectral_score}) - 10.0) / 160.0)"
-            return "0.0"
+            order_clauses = [build_order_clause(col, direction) for col, direction in valid_sorts]
 
-        score_terms = []
-        for i, (col, direction) in enumerate(valid_sorts):
-            w = weights[i]
-            sub = get_score_subexpr(col, direction)
-            score_terms.append(f"({sub}) * {w}")
+            # Fallback deterministic order
+            if not any(v[0] == "star_system" for v in valid_sorts):
+                order_clauses.append("systems.star_system ASC")
 
-        score_formula = " + ".join(score_terms)
+            order_sql = "ORDER BY " + ", ".join(order_clauses)
 
-        select_sql = f"""
-            WITH base AS (
+            select_sql = f"""
                 SELECT 
                     systems.*,
                     (SELECT b.luminosity FROM bodies b WHERE b.system_address = systems.system_address AND b.star_type IS NOT NULL ORDER BY b.distance_from_arrival_ls ASC, b.body_id ASC LIMIT 1) AS main_star_luminosity,
@@ -1440,6 +1583,7 @@ def get_systems(
                     COALESCE(systems.total_system_mass, (SELECT (COALESCE(SUM(b.stellar_mass), 0.0) + COALESCE(SUM(b.mass_em) / 332946.0487, 0.0)) FROM bodies b WHERE b.system_address = systems.system_address AND (b.stellar_mass IS NOT NULL OR b.mass_em IS NOT NULL))) AS _calc_total_system_mass,
                     pe.rarity_score,
                     {cmdr_dist_expr} AS cmdr_distance_ly,
+                    NULL AS composite_score,
                     EXISTS (
                         SELECT 1 FROM bodies b
                         WHERE b.system_address = systems.system_address
@@ -1451,231 +1595,140 @@ def get_systems(
                 FROM systems
                 LEFT JOIN system_physics_evaluations pe ON systems.system_address = pe.system_address
                 {where_clause}
-            ),
-            stats AS (
+                {order_sql}
+                LIMIT ? OFFSET ?
+            """
+            c.execute(select_sql, dist_params + params + [limit, offset])
+
+        rows = [dict(r) for r in c.fetchall()]
+        for r in rows:
+            if r.get("main_star_subclass") is None and r.get("_calc_main_star_subclass") is not None:
+                r["main_star_subclass"] = r["_calc_main_star_subclass"]
+            if r.get("system_age_my") is None and r.get("_calc_system_age_my") is not None:
+                r["system_age_my"] = r["_calc_system_age_my"]
+            if r.get("main_star_mass") is None and r.get("_calc_main_star_mass") is not None:
+                r["main_star_mass"] = r["_calc_main_star_mass"]
+            if r.get("total_system_mass") is None and r.get("_calc_total_system_mass") is not None:
+                r["total_system_mass"] = r["_calc_total_system_mass"]
+
+        if rows:
+            sys_addrs = [r["system_address"] for r in rows]
+            placeholders = ",".join("?" * len(sys_addrs))
+            c.execute(f"""
+                SELECT system_address, body_id, body_name, planet_class, radius, surface_gravity_g, surface_temperature, rings, mining_signals
+                FROM bodies
+                WHERE system_address IN ({placeholders}) AND landable = 1
+                ORDER BY radius DESC
+            """, sys_addrs)
+            summary_by_sys = {}
+            for b in c.fetchall():
+                s_addr = b["system_address"]
+                if s_addr not in summary_by_sys:
+                    summary_by_sys[s_addr] = []
+                p_class = b["planet_class"] or ""
+                p_lower = p_class.lower()
+
+                short_type = "Landable"
+                if "high metal" in p_lower:
+                    short_type = "HMC"
+                elif "metal rich" in p_lower:
+                    short_type = "Metal Rich"
+                elif "rocky ice" in p_lower or "icy rocky" in p_lower:
+                    short_type = "Icy Rocky"
+                elif "rocky" in p_lower:
+                    short_type = "Rocky"
+                elif "icy" in p_lower:
+                    short_type = "Icy"
+
+                is_ringed = bool(b["rings"] and b["rings"] != "[]" and b["rings"] != '""' and "Ring" in b["rings"])
+                rad = b["radius"]
+                rad_km = round(rad / 1000) if rad else None
+                temp_k = round(b["surface_temperature"]) if b["surface_temperature"] is not None else None
+
+                summary_by_sys[s_addr].append({
+                    "body_id": b["body_id"],
+                    "body_name": b["body_name"],
+                    "type": short_type,
+                    "planet_class": p_class,
+                    "radius": rad,
+                    "radius_km": rad_km,
+                    "gravity_g": b["surface_gravity_g"],
+                    "surface_temperature": b["surface_temperature"],
+                    "temp_k": temp_k,
+                    "is_ringed": is_ringed,
+                    "mining_signals": b["mining_signals"] or 0
+                })
+            for r in rows:
+                r["landable_bodies"] = summary_by_sys.get(r["system_address"], [])
+
+            # Fetch bookmarks for matching systems
+            c.execute(f"""
+                SELECT system_address, body_id, body_name, alias_name, note_markdown
+                FROM body_bookmarks
+                WHERE system_address IN ({placeholders})
+                ORDER BY updated_at DESC
+            """, sys_addrs)
+            bms_by_sys = {}
+            for bm in c.fetchall():
+                s_addr = bm["system_address"]
+                bms_by_sys.setdefault(s_addr, []).append({
+                    "body_id": bm["body_id"],
+                    "body_name": bm["body_name"],
+                    "alias_name": bm["alias_name"] or "",
+                    "has_note": bool(bm["note_markdown"] and bm["note_markdown"].strip()),
+                    "note_snippet": (bm["note_markdown"] or "").strip()[:60]
+                })
+            for r in rows:
+                r["bookmarks"] = bms_by_sys.get(r["system_address"], [])
+
+            # Fetch DSS mapping statistics (user mapped vs mappable) for matching systems
+            c.execute(f"""
                 SELECT 
-                    COALESCE(MIN(total_potential_value), 0) AS min_val, COALESCE(MAX(total_potential_value), 0) AS max_val,
-                    COALESCE(MIN(total_fss_value), 0) AS min_fss, COALESCE(MAX(total_fss_value), 0) AS max_fss,
-                    COALESCE(MIN(total_bio_signals), 0) AS min_bio, COALESCE(MAX(total_bio_signals), 0) AS max_bio,
-                    COALESCE(MIN(first_discovered_bodies), 0) AS min_fd, COALESCE(MAX(first_discovered_bodies), 0) AS max_fd,
-                    COALESCE(MIN(cmdr_distance_ly), 0) AS min_cmdr, COALESCE(MAX(cmdr_distance_ly), 0) AS max_cmdr,
-                    COALESCE(MIN(sol_distance_ly), 0) AS min_sol, COALESCE(MAX(sol_distance_ly), 0) AS max_sol,
-                    COALESCE(MIN(CASE WHEN avg_landable_radius > 0 THEN avg_landable_radius ELSE NULL END), 0) AS min_rad,
-                    COALESCE(MAX(CASE WHEN avg_landable_radius > 0 THEN avg_landable_radius ELSE NULL END), 0) AS max_rad,
-                    COALESCE(MIN(scanned_bodies), 0) AS min_sb, COALESCE(MAX(scanned_bodies), 0) AS max_sb,
-                    COALESCE(MIN(visit_count), 0) AS min_vc, COALESCE(MAX(visit_count), 0) AS max_vc,
-                    COALESCE(MIN(COALESCE(rarity_score, 10.0)), 10.0) AS min_rarity, COALESCE(MAX(COALESCE(rarity_score, 10.0)), 10.0) AS max_rarity,
-                    COALESCE(MIN(julianday(last_visited)), 0) AS min_last_visited, COALESCE(MAX(julianday(last_visited)), 0) AS max_last_visited,
-                    COALESCE(MIN(julianday(first_visited)), 0) AS min_first_visited, COALESCE(MAX(julianday(first_visited)), 0) AS max_first_visited
-                FROM base
-            )
-            SELECT 
-                base.*,
-                ROUND(({score_formula}) * 100.0, 1) AS composite_score
-            FROM base, stats
-            ORDER BY composite_score DESC, base.total_potential_value DESC, base.star_system ASC
-            LIMIT ? OFFSET ?
-        """
-        c.execute(select_sql, dist_params + params + [limit, offset])
-    else:
-        # Strict hierarchical multi-column sorting (Method A / Standard)
-        def build_order_clause(col_name, direction):
-            if col_name == "cmdr_distance_ly":
-                return f"cmdr_distance_ly IS NULL ASC, cmdr_distance_ly {direction.upper()}"
-            if col_name == "avg_landable_radius":
-                return f"(avg_landable_radius IS NULL OR avg_landable_radius = 0) ASC, avg_landable_radius {direction.upper()}"
-            if col_name == "main_star_type":
-                spectral_order = """
-                    CASE 
-                        WHEN main_star_type = 'O' THEN 10
-                        WHEN main_star_type LIKE 'B%' THEN 20
-                        WHEN main_star_type LIKE 'A%' AND main_star_type NOT LIKE 'AeBe%' THEN 30
-                        WHEN main_star_type LIKE 'F%' THEN 40
-                        WHEN main_star_type LIKE 'G%' THEN 50
-                        WHEN main_star_type LIKE 'K%' THEN 60
-                        WHEN main_star_type LIKE 'M%' AND main_star_type != 'MS' THEN 70
-                        WHEN main_star_type = 'L' THEN 80
-                        WHEN main_star_type = 'T' THEN 90
-                        WHEN main_star_type = 'Y' THEN 100
-                        WHEN main_star_type LIKE 'TTS%' THEN 110
-                        WHEN main_star_type LIKE 'AeBe%' THEN 120
-                        WHEN main_star_type LIKE 'W%' THEN 130
-                        WHEN main_star_type LIKE 'C%' OR main_star_type IN ('S', 'MS') THEN 140
-                        WHEN main_star_type LIKE 'D%' THEN 150
-                        WHEN main_star_type = 'N' THEN 160
-                        WHEN main_star_type = 'H' OR main_star_type LIKE '%BlackHole%' THEN 170
-                        ELSE 999
-                    END
-                """
-                return f"(main_star_type IS NULL OR main_star_type = '') ASC, {spectral_order} {direction.upper()}, main_star_type {direction.upper()}"
-            if col_name == "rarity_score":
-                return f"COALESCE(pe.rarity_score, 10.0) {direction.upper()}"
-            return f"systems.{col_name} {direction.upper()}"
+                    system_address,
+                    COUNT(CASE WHEN (planet_class IS NOT NULL AND planet_class != '') THEN 1 END) AS mappable_bodies,
+                    COUNT(CASE WHEN is_mapped_by_user = 1 THEN 1 END) AS user_mapped_bodies
+                FROM bodies
+                WHERE system_address IN ({placeholders})
+                GROUP BY system_address
+            """, sys_addrs)
+            dss_by_sys = {row["system_address"]: row for row in c.fetchall()}
+            for r in rows:
+                dss_info = dss_by_sys.get(r["system_address"], {"mappable_bodies": 0, "user_mapped_bodies": 0})
+                u_mapped = dss_info["user_mapped_bodies"]
+                m_bodies = dss_info["mappable_bodies"]
+                is_pdss = (u_mapped > 0) and (
+                    (m_bodies > 0 and u_mapped < m_bodies)
+                    or (r.get("total_bodies", 0) > 0 and u_mapped < r.get("total_bodies", 0))
+                )
+                r["user_mapped_bodies"] = u_mapped
+                r["mappable_bodies"] = m_bodies
+                r["is_partial_dss"] = is_pdss
 
-        order_clauses = [build_order_clause(col, direction) for col, direction in valid_sorts]
-
-        # Fallback deterministic order
-        if not any(v[0] == "star_system" for v in valid_sorts):
-            order_clauses.append("systems.star_system ASC")
-
-        order_sql = "ORDER BY " + ", ".join(order_clauses)
-
-        select_sql = f"""
-            SELECT 
-                systems.*,
-                (SELECT b.luminosity FROM bodies b WHERE b.system_address = systems.system_address AND b.star_type IS NOT NULL ORDER BY b.distance_from_arrival_ls ASC, b.body_id ASC LIMIT 1) AS main_star_luminosity,
-                COALESCE(systems.main_star_subclass, (SELECT b.subclass FROM bodies b WHERE b.system_address = systems.system_address AND b.star_type IS NOT NULL AND b.subclass IS NOT NULL ORDER BY b.distance_from_arrival_ls ASC, b.body_id ASC LIMIT 1)) AS _calc_main_star_subclass,
-                (SELECT b.absolute_magnitude FROM bodies b WHERE b.system_address = systems.system_address AND b.star_type IS NOT NULL ORDER BY b.distance_from_arrival_ls ASC, b.body_id ASC LIMIT 1) AS main_star_absolute_magnitude,
-                COALESCE(systems.system_age_my, (SELECT b.age_my FROM bodies b WHERE b.system_address = systems.system_address AND b.star_type IS NOT NULL AND b.age_my IS NOT NULL ORDER BY b.distance_from_arrival_ls ASC, b.body_id ASC LIMIT 1)) AS _calc_system_age_my,
-                COALESCE(systems.main_star_mass, (SELECT b.stellar_mass FROM bodies b WHERE b.system_address = systems.system_address AND b.star_type IS NOT NULL AND b.stellar_mass IS NOT NULL ORDER BY b.distance_from_arrival_ls ASC, b.body_id ASC LIMIT 1)) AS _calc_main_star_mass,
-                COALESCE(systems.total_system_mass, (SELECT (COALESCE(SUM(b.stellar_mass), 0.0) + COALESCE(SUM(b.mass_em) / 332946.0487, 0.0)) FROM bodies b WHERE b.system_address = systems.system_address AND (b.stellar_mass IS NOT NULL OR b.mass_em IS NOT NULL))) AS _calc_total_system_mass,
-                pe.rarity_score,
-                {cmdr_dist_expr} AS cmdr_distance_ly,
-                NULL AS composite_score,
-                EXISTS (
-                    SELECT 1 FROM bodies b
-                    WHERE b.system_address = systems.system_address
-                    AND (
-                        b.anomalies_json LIKE '%Confirmed GGG%'
-                        {codex_ggg_check}
-                    )
-                ) AS has_ggg
-            FROM systems
-            LEFT JOIN system_physics_evaluations pe ON systems.system_address = pe.system_address
-            {where_clause}
-            {order_sql}
-            LIMIT ? OFFSET ?
-        """
-        c.execute(select_sql, dist_params + params + [limit, offset])
-
-    rows = [dict(r) for r in c.fetchall()]
-    for r in rows:
-        if r.get("main_star_subclass") is None and r.get("_calc_main_star_subclass") is not None:
-            r["main_star_subclass"] = r["_calc_main_star_subclass"]
-        if r.get("system_age_my") is None and r.get("_calc_system_age_my") is not None:
-            r["system_age_my"] = r["_calc_system_age_my"]
-        if r.get("main_star_mass") is None and r.get("_calc_main_star_mass") is not None:
-            r["main_star_mass"] = r["_calc_main_star_mass"]
-        if r.get("total_system_mass") is None and r.get("_calc_total_system_mass") is not None:
-            r["total_system_mass"] = r["_calc_total_system_mass"]
-
-    if rows:
-        sys_addrs = [r["system_address"] for r in rows]
-        placeholders = ",".join("?" * len(sys_addrs))
-        c.execute(f"""
-            SELECT system_address, body_id, body_name, planet_class, radius, surface_gravity_g, surface_temperature, rings, mining_signals
-            FROM bodies
-            WHERE system_address IN ({placeholders}) AND landable = 1
-            ORDER BY radius DESC
-        """, sys_addrs)
-        summary_by_sys = {}
-        for b in c.fetchall():
-            s_addr = b["system_address"]
-            if s_addr not in summary_by_sys:
-                summary_by_sys[s_addr] = []
-            p_class = b["planet_class"] or ""
-            p_lower = p_class.lower()
-
-            short_type = "Landable"
-            if "high metal" in p_lower:
-                short_type = "HMC"
-            elif "metal rich" in p_lower:
-                short_type = "Metal Rich"
-            elif "rocky ice" in p_lower or "icy rocky" in p_lower:
-                short_type = "Icy Rocky"
-            elif "rocky" in p_lower:
-                short_type = "Rocky"
-            elif "icy" in p_lower:
-                short_type = "Icy"
-
-            is_ringed = bool(b["rings"] and b["rings"] != "[]" and b["rings"] != '""' and "Ring" in b["rings"])
-            rad = b["radius"]
-            rad_km = round(rad / 1000) if rad else None
-            temp_k = round(b["surface_temperature"]) if b["surface_temperature"] is not None else None
-
-            summary_by_sys[s_addr].append({
-                "body_id": b["body_id"],
-                "body_name": b["body_name"],
-                "type": short_type,
-                "planet_class": p_class,
-                "radius": rad,
-                "radius_km": rad_km,
-                "gravity_g": b["surface_gravity_g"],
-                "surface_temperature": b["surface_temperature"],
-                "temp_k": temp_k,
-                "is_ringed": is_ringed,
-                "mining_signals": b["mining_signals"] or 0
-            })
         for r in rows:
-            r["landable_bodies"] = summary_by_sys.get(r["system_address"], [])
+            if "landable_bodies" not in r:
+                r["landable_bodies"] = []
+            if "bookmarks" not in r:
+                r["bookmarks"] = []
+            lm_dists = calculate_landmark_distances(r.get("star_pos_x"), r.get("star_pos_y"), r.get("star_pos_z"))
+            r.update(lm_dists)
 
-        # Fetch bookmarks for matching systems
-        c.execute(f"""
-            SELECT system_address, body_id, body_name, alias_name, note_markdown
-            FROM body_bookmarks
-            WHERE system_address IN ({placeholders})
-            ORDER BY updated_at DESC
-        """, sys_addrs)
-        bms_by_sys = {}
-        for bm in c.fetchall():
-            s_addr = bm["system_address"]
-            bms_by_sys.setdefault(s_addr, []).append({
-                "body_id": bm["body_id"],
-                "body_name": bm["body_name"],
-                "alias_name": bm["alias_name"] or "",
-                "has_note": bool(bm["note_markdown"] and bm["note_markdown"].strip()),
-                "note_snippet": (bm["note_markdown"] or "").strip()[:60]
-            })
+        row_voxel_keys = {r["system_address"]: voxel_key(r.get("star_system")) for r in rows}
+        voxel_stats = voxel_age_stats(conn, [k for k in row_voxel_keys.values() if k])
         for r in rows:
-            r["bookmarks"] = bms_by_sys.get(r["system_address"], [])
+            k = row_voxel_keys[r["system_address"]]
+            avg, count = voxel_stats.get(k, (None, 0))
+            r["voxel_key"] = k
+            r["voxel_age_avg_my"] = avg
+            r["voxel_age_count"] = count
 
-        # Fetch DSS mapping statistics (user mapped vs mappable) for matching systems
-        c.execute(f"""
-            SELECT 
-                system_address,
-                COUNT(CASE WHEN (planet_class IS NOT NULL AND planet_class != '') THEN 1 END) AS mappable_bodies,
-                COUNT(CASE WHEN is_mapped_by_user = 1 THEN 1 END) AS user_mapped_bodies
-            FROM bodies
-            WHERE system_address IN ({placeholders})
-            GROUP BY system_address
-        """, sys_addrs)
-        dss_by_sys = {row["system_address"]: row for row in c.fetchall()}
-        for r in rows:
-            dss_info = dss_by_sys.get(r["system_address"], {"mappable_bodies": 0, "user_mapped_bodies": 0})
-            u_mapped = dss_info["user_mapped_bodies"]
-            m_bodies = dss_info["mappable_bodies"]
-            is_pdss = (u_mapped > 0) and (
-                (m_bodies > 0 and u_mapped < m_bodies)
-                or (r.get("total_bodies", 0) > 0 and u_mapped < r.get("total_bodies", 0))
-            )
-            r["user_mapped_bodies"] = u_mapped
-            r["mappable_bodies"] = m_bodies
-            r["is_partial_dss"] = is_pdss
+        jump_stats = None
+        try:
+            jump_stats = get_cmdr_jump_stats(conn)
+        except Exception:
+            pass
 
-    for r in rows:
-        if "landable_bodies" not in r:
-            r["landable_bodies"] = []
-        if "bookmarks" not in r:
-            r["bookmarks"] = []
-        lm_dists = calculate_landmark_distances(r.get("star_pos_x"), r.get("star_pos_y"), r.get("star_pos_z"))
-        r.update(lm_dists)
-
-    row_voxel_keys = {r["system_address"]: voxel_key(r.get("star_system")) for r in rows}
-    voxel_stats = voxel_age_stats(conn, [k for k in row_voxel_keys.values() if k])
-    for r in rows:
-        k = row_voxel_keys[r["system_address"]]
-        avg, count = voxel_stats.get(k, (None, 0))
-        r["voxel_key"] = k
-        r["voxel_age_avg_my"] = avg
-        r["voxel_age_count"] = count
-
-    jump_stats = None
-    try:
-        jump_stats = get_cmdr_jump_stats(conn)
-    except Exception:
-        pass
-
-    conn.close()
+    finally:
+        conn.close()
 
     return {
         "total": total_count,
@@ -1777,190 +1830,192 @@ def api_delete_mining_site(site_id: int):
 @app.get("/api/system/{system_address}")
 def get_system_detail(system_address: int):
     conn = get_db_connection()
-    c = conn.cursor()
+    try:
+        c = conn.cursor()
 
-    c.execute("SELECT * FROM systems WHERE system_address = ?", (system_address,))
-    sys_row = c.fetchone()
-    if not sys_row:
-        conn.close()
-        return JSONResponse({"error": "System not found"}, status_code=404)
+        c.execute("SELECT * FROM systems WHERE system_address = ?", (system_address,))
+        sys_row = c.fetchone()
+        if not sys_row:
+            conn.close()
+            return JSONResponse({"error": "System not found"}, status_code=404)
 
-    system_data = dict(sys_row)
-    if system_data.get("star_pos_x") is not None:
-        region = get_region_from_coords(system_data["star_pos_x"], system_data.get("star_pos_y"), system_data.get("star_pos_z"))
-        system_data["galactic_region_id"], system_data["galactic_region_en"], system_data["galactic_region_ja"] = region
-    if system_data.get("edsm_factions_json"):
-        try:
-            system_data["edsm_factions"] = json.loads(system_data["edsm_factions_json"])
-        except Exception:
-            system_data["edsm_factions"] = []
-    else:
-        system_data["edsm_factions"] = []
-
-    lm_dists = calculate_landmark_distances(system_data.get("star_pos_x"), system_data.get("star_pos_y"), system_data.get("star_pos_z"))
-    system_data.update(lm_dists)
-
-    # Queue EDSM verification with priority if not yet checked
-    sys_name = system_data.get("star_system")
-    if sys_name and not system_data.get("edsm_checked"):
-        edsm_service.queue_system_check(system_address, sys_name, priority=True)
-
-    # Fetch bodies
-    c.execute("""
-        SELECT * FROM bodies 
-        WHERE system_address = ? 
-        ORDER BY distance_from_arrival_ls ASC, body_id ASC
-    """, (system_address,))
-    main_star = system_data.get("main_star_type") or "F"
-    bodies = []
-    exobiology_predict_body = addon_manager.get_provider("exobiology_predict_body")
-    body_rows = [dict(r) for r in c.fetchall()]
-    if system_data.get("main_star_subclass") is None:
-        for b in body_rows:
-            if b.get("star_type") and b.get("subclass") is not None:
-                system_data["main_star_subclass"] = b["subclass"]
-                break
-
-    if system_data.get("main_star_mass") is None:
-        for b in body_rows:
-            if b.get("star_type") and b.get("stellar_mass") is not None:
-                system_data["main_star_mass"] = b["stellar_mass"]
-                break
-
-    if system_data.get("total_system_mass") is None:
-        tot_m = 0.0
-        has_m = False
-        for b in body_rows:
-            if b.get("stellar_mass") is not None:
-                tot_m += float(b["stellar_mass"])
-                has_m = True
-            elif b.get("mass_em") is not None:
-                tot_m += float(b["mass_em"]) / 332946.0487
-                has_m = True
-        if has_m:
-            system_data["total_system_mass"] = tot_m
-    exobiology_system_context = build_system_context(
-        body_rows,
-        system_name=system_data.get("system_name", "") or system_data.get("star_system", ""),
-        star_pos=(system_data.get("star_pos_x"), system_data.get("star_pos_y"), system_data.get("star_pos_z"))
-        if system_data.get("star_pos_x") is not None else None,
-        fallback_star_type=main_star,
-    )
-    for r in body_rows:
-        b = dict(r)
-        b["main_star_type"] = main_star
-        b["system_main_star_type"] = main_star
-        b["star_system"] = system_data.get("system_name", "") or system_data.get("star_system", "")
+        system_data = dict(sys_row)
         if system_data.get("star_pos_x") is not None:
-            b["star_pos_x"] = system_data.get("star_pos_x")
-            b["star_pos_y"] = system_data.get("star_pos_y")
-            b["star_pos_z"] = system_data.get("star_pos_z")
-            b["star_pos"] = (system_data.get("star_pos_x"), system_data.get("star_pos_y"), system_data.get("star_pos_z"))
-
-        if b.get("anomalies_json"):
+            region = get_region_from_coords(system_data["star_pos_x"], system_data.get("star_pos_y"), system_data.get("star_pos_z"))
+            system_data["galactic_region_id"], system_data["galactic_region_en"], system_data["galactic_region_ja"] = region
+        if system_data.get("edsm_factions_json"):
             try:
-                b["anomalies"] = json.loads(b["anomalies_json"])
+                system_data["edsm_factions"] = json.loads(system_data["edsm_factions_json"])
             except Exception:
-                b["anomalies"] = []
+                system_data["edsm_factions"] = []
         else:
-            b["anomalies"] = []
+            system_data["edsm_factions"] = []
 
-        # Always calculate latest exobiology predictions dynamically using full planet attributes & main star class
-        try:
-            b["exobiology"] = exobiology_predict_body(b, system_context=exobiology_system_context) if exobiology_predict_body else []
-        except Exception:
-            if b.get("exobiology_predictions"):
+        lm_dists = calculate_landmark_distances(system_data.get("star_pos_x"), system_data.get("star_pos_y"), system_data.get("star_pos_z"))
+        system_data.update(lm_dists)
+
+        # Queue EDSM verification with priority if not yet checked
+        sys_name = system_data.get("star_system")
+        if sys_name and not system_data.get("edsm_checked"):
+            edsm_service.queue_system_check(system_address, sys_name, priority=True)
+
+        # Fetch bodies
+        c.execute("""
+            SELECT * FROM bodies 
+            WHERE system_address = ? 
+            ORDER BY distance_from_arrival_ls ASC, body_id ASC
+        """, (system_address,))
+        main_star = system_data.get("main_star_type") or "F"
+        bodies = []
+        exobiology_predict_body = addon_manager.get_provider("exobiology_predict_body")
+        body_rows = [dict(r) for r in c.fetchall()]
+        if system_data.get("main_star_subclass") is None:
+            for b in body_rows:
+                if b.get("star_type") and b.get("subclass") is not None:
+                    system_data["main_star_subclass"] = b["subclass"]
+                    break
+
+        if system_data.get("main_star_mass") is None:
+            for b in body_rows:
+                if b.get("star_type") and b.get("stellar_mass") is not None:
+                    system_data["main_star_mass"] = b["stellar_mass"]
+                    break
+
+        if system_data.get("total_system_mass") is None:
+            tot_m = 0.0
+            has_m = False
+            for b in body_rows:
+                if b.get("stellar_mass") is not None:
+                    tot_m += float(b["stellar_mass"])
+                    has_m = True
+                elif b.get("mass_em") is not None:
+                    tot_m += float(b["mass_em"]) / 332946.0487
+                    has_m = True
+            if has_m:
+                system_data["total_system_mass"] = tot_m
+        exobiology_system_context = build_system_context(
+            body_rows,
+            system_name=system_data.get("system_name", "") or system_data.get("star_system", ""),
+            star_pos=(system_data.get("star_pos_x"), system_data.get("star_pos_y"), system_data.get("star_pos_z"))
+            if system_data.get("star_pos_x") is not None else None,
+            fallback_star_type=main_star,
+        )
+        for r in body_rows:
+            b = dict(r)
+            b["main_star_type"] = main_star
+            b["system_main_star_type"] = main_star
+            b["star_system"] = system_data.get("system_name", "") or system_data.get("star_system", "")
+            if system_data.get("star_pos_x") is not None:
+                b["star_pos_x"] = system_data.get("star_pos_x")
+                b["star_pos_y"] = system_data.get("star_pos_y")
+                b["star_pos_z"] = system_data.get("star_pos_z")
+                b["star_pos"] = (system_data.get("star_pos_x"), system_data.get("star_pos_y"), system_data.get("star_pos_z"))
+
+            if b.get("anomalies_json"):
                 try:
-                    b["exobiology"] = json.loads(b["exobiology_predictions"])
+                    b["anomalies"] = json.loads(b["anomalies_json"])
                 except Exception:
-                    b["exobiology"] = []
+                    b["anomalies"] = []
             else:
-                b["exobiology"] = []
+                b["anomalies"] = []
 
-        if b.get("rings"):
+            # Always calculate latest exobiology predictions dynamically using full planet attributes & main star class
             try:
-                b["rings_list"] = json.loads(b["rings"])
+                b["exobiology"] = exobiology_predict_body(b, system_context=exobiology_system_context) if exobiology_predict_body else []
             except Exception:
+                if b.get("exobiology_predictions"):
+                    try:
+                        b["exobiology"] = json.loads(b["exobiology_predictions"])
+                    except Exception:
+                        b["exobiology"] = []
+                else:
+                    b["exobiology"] = []
+
+            if b.get("rings"):
+                try:
+                    b["rings_list"] = json.loads(b["rings"])
+                except Exception:
+                    b["rings_list"] = []
+            else:
                 b["rings_list"] = []
-        else:
-            b["rings_list"] = []
 
-        if b.get("materials"):
-            try:
-                b["materials_list"] = json.loads(b["materials"])
-            except Exception:
+            if b.get("materials"):
+                try:
+                    b["materials_list"] = json.loads(b["materials"])
+                except Exception:
+                    b["materials_list"] = []
+            else:
                 b["materials_list"] = []
+
+            bodies.append(b)
+
+        # Fetch visits timeline
+        c.execute("SELECT * FROM visits WHERE system_address = ? ORDER BY timestamp DESC", (system_address,))
+        visits = [dict(r) for r in c.fetchall()]
+
+        # Fetch scanned organics
+        c.execute("SELECT * FROM scanned_organics WHERE system_address = ? ORDER BY timestamp DESC", (system_address,))
+        raw_organics = [dict(r) for r in c.fetchall()]
+
+        # Fetch surface mining activities
+        c.execute("""
+            SELECT * FROM surface_mining_activities 
+            WHERE system_address = ? 
+            ORDER BY timestamp DESC
+        """, (system_address,))
+        raw_mining = [dict(r) for r in c.fetchall()]
+
+        # Fetch body bookmarks
+        c.execute("SELECT * FROM body_bookmarks WHERE system_address = ?", (system_address,))
+        bm_map = {b_row["body_id"]: dict(b_row) for b_row in c.fetchall()}
+        for b in bodies:
+            b_id = b.get("body_id")
+            b["bookmark"] = bm_map.get(b_id)
+        system_data["bookmarks"] = list(bm_map.values())
+        system_data["bookmarks_count"] = len(bm_map)
+
+        # Fetch physics evaluation (Stellar Physics Engine / ED_Analysys)
+        c.execute("SELECT rarity_score, star_count, planet_count, anomalies_json, narrative_report, raw_features_json, evaluated_at FROM system_physics_evaluations WHERE system_address = ?", (system_address,))
+        phys_row = c.fetchone()
+        if not phys_row:
+            try:
+                storage = StellarDatabaseStorage(db_path=conn)
+                storage.evaluate_and_store_from_ed_journal_db(system_address)
+                c.execute("SELECT rarity_score, star_count, planet_count, anomalies_json, narrative_report, raw_features_json, evaluated_at FROM system_physics_evaluations WHERE system_address = ?", (system_address,))
+                phys_row = c.fetchone()
+            except Exception as p_err:
+                print(f"Warning: on-demand physics evaluation failed for system {system_address}:", p_err)
+
+        if phys_row:
+            anoms_en = json.loads(phys_row["anomalies_json"])
+            rep_en = phys_row["narrative_report"]
+            system_data["rarity_score"] = phys_row["rarity_score"]
+            system_data["physics_evaluation"] = {
+                "rarity_score": phys_row["rarity_score"],
+                "star_count": phys_row["star_count"],
+                "planet_count": phys_row["planet_count"],
+                "anomalies_en": anoms_en,
+                "anomalies_ja": translate_anomalies_list_to_ja(anoms_en),
+                "narrative_report_en": rep_en,
+                "narrative_report_ja": translate_narrative_report_to_ja(rep_en),
+                "raw_features": json.loads(phys_row["raw_features_json"]),
+                "evaluated_at": phys_row["evaluated_at"]
+            }
         else:
-            b["materials_list"] = []
+            system_data["rarity_score"] = None
+            system_data["physics_evaluation"] = None
 
-        bodies.append(b)
+        # Fetch stations & settlements
+        c.execute("""
+            SELECT * FROM stations 
+            WHERE system_address = ? 
+            ORDER BY is_planetary ASC, distance_to_arrival_ls ASC, station_name ASC
+        """, (system_address,))
+        stations = [dict(r) for r in c.fetchall()]
 
-    # Fetch visits timeline
-    c.execute("SELECT * FROM visits WHERE system_address = ? ORDER BY timestamp DESC", (system_address,))
-    visits = [dict(r) for r in c.fetchall()]
-
-    # Fetch scanned organics
-    c.execute("SELECT * FROM scanned_organics WHERE system_address = ? ORDER BY timestamp DESC", (system_address,))
-    raw_organics = [dict(r) for r in c.fetchall()]
-
-    # Fetch surface mining activities
-    c.execute("""
-        SELECT * FROM surface_mining_activities 
-        WHERE system_address = ? 
-        ORDER BY timestamp DESC
-    """, (system_address,))
-    raw_mining = [dict(r) for r in c.fetchall()]
-
-    # Fetch body bookmarks
-    c.execute("SELECT * FROM body_bookmarks WHERE system_address = ?", (system_address,))
-    bm_map = {b_row["body_id"]: dict(b_row) for b_row in c.fetchall()}
-    for b in bodies:
-        b_id = b.get("body_id")
-        b["bookmark"] = bm_map.get(b_id)
-    system_data["bookmarks"] = list(bm_map.values())
-    system_data["bookmarks_count"] = len(bm_map)
-
-    # Fetch physics evaluation (Stellar Physics Engine / ED_Analysys)
-    c.execute("SELECT rarity_score, star_count, planet_count, anomalies_json, narrative_report, raw_features_json, evaluated_at FROM system_physics_evaluations WHERE system_address = ?", (system_address,))
-    phys_row = c.fetchone()
-    if not phys_row:
-        try:
-            storage = StellarDatabaseStorage(db_path=conn)
-            storage.evaluate_and_store_from_ed_journal_db(system_address)
-            c.execute("SELECT rarity_score, star_count, planet_count, anomalies_json, narrative_report, raw_features_json, evaluated_at FROM system_physics_evaluations WHERE system_address = ?", (system_address,))
-            phys_row = c.fetchone()
-        except Exception as p_err:
-            print(f"Warning: on-demand physics evaluation failed for system {system_address}:", p_err)
-
-    if phys_row:
-        anoms_en = json.loads(phys_row["anomalies_json"])
-        rep_en = phys_row["narrative_report"]
-        system_data["rarity_score"] = phys_row["rarity_score"]
-        system_data["physics_evaluation"] = {
-            "rarity_score": phys_row["rarity_score"],
-            "star_count": phys_row["star_count"],
-            "planet_count": phys_row["planet_count"],
-            "anomalies_en": anoms_en,
-            "anomalies_ja": translate_anomalies_list_to_ja(anoms_en),
-            "narrative_report_en": rep_en,
-            "narrative_report_ja": translate_narrative_report_to_ja(rep_en),
-            "raw_features": json.loads(phys_row["raw_features_json"]),
-            "evaluated_at": phys_row["evaluated_at"]
-        }
-    else:
-        system_data["rarity_score"] = None
-        system_data["physics_evaluation"] = None
-
-    # Fetch stations & settlements
-    c.execute("""
-        SELECT * FROM stations 
-        WHERE system_address = ? 
-        ORDER BY is_planetary ASC, distance_to_arrival_ls ASC, station_name ASC
-    """, (system_address,))
-    stations = [dict(r) for r in c.fetchall()]
-
-    db_mining_sites = get_mining_sites(conn, system_address)
-    conn.close()
+        db_mining_sites = get_mining_sites(conn, system_address)
+    finally:
+        conn.close()
 
     if db_mining_sites:
         final_mining_sites = db_mining_sites
@@ -2218,29 +2273,31 @@ def get_system_physics(system_address: int):
     If not yet evaluated, runs evaluation on demand from systems/bodies.
     """
     conn = get_db_connection()
-    c = conn.cursor()
-    c.execute(
-        "SELECT rarity_score, star_count, planet_count, anomalies_json, narrative_report, raw_features_json, evaluated_at FROM system_physics_evaluations WHERE system_address = ?",
-        (system_address,)
-    )
-    phys_row = c.fetchone()
-    
-    if not phys_row:
-        # Evaluate on-demand
-        storage = StellarDatabaseStorage(db_path=conn)
-        eval_result = storage.evaluate_and_store_from_ed_journal_db(system_address)
-        if not eval_result:
-            conn.close()
-            return JSONResponse({"error": "System not found or has no scannable bodies for astrophysics evaluation"}, status_code=404)
+    try:
+        c = conn.cursor()
         c.execute(
             "SELECT rarity_score, star_count, planet_count, anomalies_json, narrative_report, raw_features_json, evaluated_at FROM system_physics_evaluations WHERE system_address = ?",
             (system_address,)
         )
         phys_row = c.fetchone()
+    
+        if not phys_row:
+            # Evaluate on-demand
+            storage = StellarDatabaseStorage(db_path=conn)
+            eval_result = storage.evaluate_and_store_from_ed_journal_db(system_address)
+            if not eval_result:
+                conn.close()
+                return JSONResponse({"error": "System not found or has no scannable bodies for astrophysics evaluation"}, status_code=404)
+            c.execute(
+                "SELECT rarity_score, star_count, planet_count, anomalies_json, narrative_report, raw_features_json, evaluated_at FROM system_physics_evaluations WHERE system_address = ?",
+                (system_address,)
+            )
+            phys_row = c.fetchone()
 
-    c.execute("SELECT star_system, star_pos_x, star_pos_y, star_pos_z FROM systems WHERE system_address = ?", (system_address,))
-    sys_row = c.fetchone()
-    conn.close()
+        c.execute("SELECT star_system, star_pos_x, star_pos_y, star_pos_z FROM systems WHERE system_address = ?", (system_address,))
+        sys_row = c.fetchone()
+    finally:
+        conn.close()
 
     if not phys_row:
         return JSONResponse({"error": "Evaluation could not be completed"}, status_code=500)
@@ -2275,12 +2332,53 @@ def load_app_settings_data() -> dict:
             return {}
     return {}
 
+_ALLOWED_APP_SETTINGS_KEYS = frozenset({
+    "language",
+    "journal_dir",
+    "edsm_auto_lookup",
+    "star_age_backfill_done",
+    "exobiology_engine_v2_done",
+})
+
+def _validate_app_settings_patch(data: dict) -> dict:
+    if not isinstance(data, dict):
+        raise ValueError("Settings payload must be a JSON object.")
+    cleaned = {}
+    for k, v in data.items():
+        if k not in _ALLOWED_APP_SETTINGS_KEYS:
+            raise ValueError(f"Unsupported setting key: {k}")
+        if k == "language":
+            if v not in ("ja", "en"):
+                raise ValueError("language must be 'ja' or 'en'.")
+            cleaned[k] = v
+        elif k in ("edsm_auto_lookup", "star_age_backfill_done", "exobiology_engine_v2_done"):
+            if not isinstance(v, bool):
+                raise ValueError(f"{k} must be boolean.")
+            cleaned[k] = v
+        elif k == "journal_dir":
+            if not isinstance(v, str) or len(v) > 512:
+                raise ValueError("journal_dir must be a valid path string under 512 chars.")
+            s = v.strip()
+            if s:
+                p = Path(s).resolve()
+                if not p.exists() or not p.is_dir():
+                    raise ValueError("Specified journal_dir does not exist or is not a directory.")
+                low = str(p).lower()
+                if any(low.startswith(sys_p) for sys_p in ("c:\\windows", "/etc", "/bin", "/usr", "/sbin")):
+                    raise ValueError("System directories cannot be configured as journal_dir.")
+                cleaned[k] = str(p)
+            else:
+                cleaned[k] = ""
+    return cleaned
+
 def save_app_settings_data(data: dict) -> dict:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     current = load_app_settings_data()
     current.update(data)
-    with open(APP_SETTINGS_FILE, "w", encoding="utf-8") as f:
+    tmp_path = APP_SETTINGS_FILE.with_suffix(".json.tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(current, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, APP_SETTINGS_FILE)
     return current
 
 def get_saved_journal_dir() -> Path:
@@ -2352,10 +2450,13 @@ def get_app_settings():
 @app.post("/api/app_settings")
 def save_app_settings_endpoint(settings: dict):
     try:
-        updated = save_app_settings_data(settings)
-        if "journal_dir" in settings:
+        validated = _validate_app_settings_patch(settings)
+        updated = save_app_settings_data(validated)
+        if "journal_dir" in validated:
             start_watcher()
         return {"status": "saved", "settings": updated}
+    except ValueError as ve:
+        return JSONResponse({"status": "error", "message": str(ve)}, status_code=400)
     except Exception as e:
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
@@ -2462,16 +2563,18 @@ def scan_codex_history_endpoint():
 @app.get("/api/codex_ggg_entries")
 def get_codex_ggg_entries():
     conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT system_address, body_id, body_name, entry_id, name, name_localised,
-               category, sub_category, region_name, ggg_variant, timestamp
-        FROM codex_entries
-        WHERE is_ggg = 1
-        ORDER BY timestamp DESC
-    """)
-    rows = [dict(r) for r in cursor.fetchall()]
-    conn.close()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT system_address, body_id, body_name, entry_id, name, name_localised,
+                   category, sub_category, region_name, ggg_variant, timestamp
+            FROM codex_entries
+            WHERE is_ggg = 1
+            ORDER BY timestamp DESC
+        """)
+        rows = [dict(r) for r in cursor.fetchall()]
+    finally:
+        conn.close()
     return {"total": len(rows), "entries": rows}
 
 ## NOTE: TTS settings persistence, /api/tts_settings, /api/tts/* endpoints,
@@ -2581,14 +2684,16 @@ def _count_for_addresses(c, table: str, addrs: List[int]) -> int:
 @app.get("/api/external/summary")
 def get_external_summary():
     conn = get_db_connection()
-    c = conn.cursor()
-    addrs = _external_addresses(c)
-    summary = {
-        "systems": len(addrs),
-        "bodies": _count_for_addresses(c, "bodies", addrs),
-        "bookmarks": _count_for_addresses(c, "body_bookmarks", addrs),
-    }
-    conn.close()
+    try:
+        c = conn.cursor()
+        addrs = _external_addresses(c)
+        summary = {
+            "systems": len(addrs),
+            "bodies": _count_for_addresses(c, "bodies", addrs),
+            "bookmarks": _count_for_addresses(c, "body_bookmarks", addrs),
+        }
+    finally:
+        conn.close()
     return summary
 
 
@@ -2612,27 +2717,31 @@ def _delete_external_systems(conn, addrs: List[int]) -> dict:
 @app.delete("/api/external/systems/{system_address}")
 def delete_external_system(system_address: int):
     conn = get_db_connection()
-    c = conn.cursor()
-    addrs = _external_addresses(c, system_address)
-    if not addrs:
-        c.execute("SELECT 1 FROM systems WHERE system_address = ?", (system_address,))
-        exists = c.fetchone() is not None
+    try:
+        c = conn.cursor()
+        addrs = _external_addresses(c, system_address)
+        if not addrs:
+            c.execute("SELECT 1 FROM systems WHERE system_address = ?", (system_address,))
+            exists = c.fetchone() is not None
+            conn.close()
+            if exists:
+                return JSONResponse({"error": "本人の探査データ（訪問済み星系）は削除できません。"}, status_code=400)
+            return JSONResponse({"error": "System not found"}, status_code=404)
+        removed = _delete_external_systems(conn, addrs)
+    finally:
         conn.close()
-        if exists:
-            return JSONResponse({"error": "本人の探査データ（訪問済み星系）は削除できません。"}, status_code=400)
-        return JSONResponse({"error": "System not found"}, status_code=404)
-    removed = _delete_external_systems(conn, addrs)
-    conn.close()
     return {"success": True, "system_address": system_address, **removed}
 
 
 @app.delete("/api/external/systems")
 def delete_all_external_systems():
     conn = get_db_connection()
-    c = conn.cursor()
-    addrs = _external_addresses(c)
-    removed = _delete_external_systems(conn, addrs) if addrs else {"systems": 0, "bodies": 0, "bookmarks": 0}
-    conn.close()
+    try:
+        c = conn.cursor()
+        addrs = _external_addresses(c)
+        removed = _delete_external_systems(conn, addrs) if addrs else {"systems": 0, "bodies": 0, "bookmarks": 0}
+    finally:
+        conn.close()
     return {"success": True, **removed}
 
 ## NOTE: /api/export/html, /api/export/snippet, /api/export/image,
@@ -2646,39 +2755,43 @@ def delete_all_external_systems():
 @app.post("/api/systems/{system_address}/toggle-shared")
 def toggle_system_shared(system_address: int):
     conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("SELECT is_shared FROM systems WHERE system_address = ?", (system_address,))
-    row = c.fetchone()
-    if not row:
-        conn.close()
-        return JSONResponse({"error": "System not found"}, status_code=404)
+    try:
+        c = conn.cursor()
+        c.execute("SELECT is_shared FROM systems WHERE system_address = ?", (system_address,))
+        row = c.fetchone()
+        if not row:
+            conn.close()
+            return JSONResponse({"error": "System not found"}, status_code=404)
 
-    new_val = 0 if row["is_shared"] == 1 else 1
-    now_iso = datetime.now(timezone.utc).isoformat() if new_val == 1 else ""
-    c.execute("UPDATE systems SET is_shared = ?, shared_at = ? WHERE system_address = ?", (new_val, now_iso, system_address))
-    conn.commit()
-    conn.close()
+        new_val = 0 if row["is_shared"] == 1 else 1
+        now_iso = datetime.now(timezone.utc).isoformat() if new_val == 1 else ""
+        c.execute("UPDATE systems SET is_shared = ?, shared_at = ? WHERE system_address = ?", (new_val, now_iso, system_address))
+        conn.commit()
+    finally:
+        conn.close()
     return {"system_address": system_address, "is_shared": new_val}
 
 @app.delete("/api/systems/{system_address}/shared")
 def delete_shared_system(system_address: int):
     conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("SELECT is_shared FROM systems WHERE system_address = ?", (system_address,))
-    row = c.fetchone()
-    if not row:
-        conn.close()
-        return JSONResponse({"error": "System not found"}, status_code=404)
-    if row["is_shared"] != 1:
-        conn.close()
-        return JSONResponse({"error": "本人の探査データ（非共有星系）は削除できません。"}, status_code=400)
+    try:
+        c = conn.cursor()
+        c.execute("SELECT is_shared FROM systems WHERE system_address = ?", (system_address,))
+        row = c.fetchone()
+        if not row:
+            conn.close()
+            return JSONResponse({"error": "System not found"}, status_code=404)
+        if row["is_shared"] != 1:
+            conn.close()
+            return JSONResponse({"error": "本人の探査データ（非共有星系）は削除できません。"}, status_code=400)
 
-    c.execute("DELETE FROM systems WHERE system_address = ? AND is_shared = 1", (system_address,))
-    c.execute("DELETE FROM bodies WHERE system_address = ?", (system_address,))
-    c.execute("DELETE FROM surface_mining_activities WHERE system_address = ?", (system_address,))
-    c.execute("DELETE FROM body_bookmarks WHERE system_address = ?", (system_address,))
-    conn.commit()
-    conn.close()
+        c.execute("DELETE FROM systems WHERE system_address = ? AND is_shared = 1", (system_address,))
+        c.execute("DELETE FROM bodies WHERE system_address = ?", (system_address,))
+        c.execute("DELETE FROM surface_mining_activities WHERE system_address = ?", (system_address,))
+        c.execute("DELETE FROM body_bookmarks WHERE system_address = ?", (system_address,))
+        conn.commit()
+    finally:
+        conn.close()
     return {"success": True, "system_address": system_address}
 
 @app.get("/api/external_footprint")

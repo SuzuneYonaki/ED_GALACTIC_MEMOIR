@@ -866,14 +866,14 @@ function renderBodyExobiologyBlock(node) {
     }
 
     const varColor = variant.includes(" - ") ? variant.split(" - ")[1].trim() : "";
-    const colorBadge = varColor ? `<span class="tag-badge" style="background: rgba(0, 255, 136, 0.15); color: #6ee7b7; border: 1px solid rgba(0, 255, 136, 0.35); font-size: 0.65rem;">🎨 ${varColor}</span>` : '';
+    const colorBadge = varColor ? `<span class="tag-badge" style="background: rgba(0, 255, 136, 0.15); color: #6ee7b7; border: 1px solid rgba(0, 255, 136, 0.35); font-size: 0.65rem;">🎨 ${escapeHtml(varColor)}</span>` : '';
 
     slotRows.push(`
       <div class="bio-slot-row ${rowClass}">
         <div class="bio-slot-left">
           <span class="${badgeClass}">${badgeText}</span>
-          <span style="font-weight: bold; color: #f8fafc;">${spName}</span>
-          ${genName && !spName.includes(genName) ? `<span style="color:var(--text-secondary); font-size:0.7rem;">(${genName})</span>` : ''}
+          <span style="font-weight: bold; color: #f8fafc;">${escapeHtml(spName)}</span>
+          ${genName && !spName.includes(genName) ? `<span style="color:var(--text-secondary); font-size:0.7rem;">(${escapeHtml(genName)})</span>` : ''}
           ${colorBadge}
           <span style="color: var(--ed-green); font-size: 0.75rem; letter-spacing: 1px; margin-left: 2px;">${stageDots}</span>
           <span class="bio-colony-tag" title="${t('bio_colony_dist')} ${dist}m">📍 ${dist}m</span>
@@ -929,18 +929,18 @@ function renderBodyExobiologyBlock(node) {
     const desc = pot.description || '';
     const variantColor = pot.variant_color || '';
     const slotNum = scannedList.length + idx + 1;
-    const colorBadge = variantColor ? `<span class="tag-badge" style="background: rgba(250, 204, 21, 0.15); color: #fde047; border: 1px solid rgba(250, 204, 21, 0.35); font-size: 0.65rem;">🎨 ${variantColor}</span>` : '';
-    const genusBadge = genName ? `<span class="tag-badge" style="background: rgba(0, 210, 255, 0.12); color: var(--ed-cyan); border: 1px solid rgba(0, 210, 255, 0.35); font-size: 0.68rem; font-weight: bold;">${genName}</span>` : '';
+    const colorBadge = variantColor ? `<span class="tag-badge" style="background: rgba(250, 204, 21, 0.15); color: #fde047; border: 1px solid rgba(250, 204, 21, 0.35); font-size: 0.65rem;">🎨 ${escapeHtml(variantColor)}</span>` : '';
+    const genusBadge = genName ? `<span class="tag-badge" style="background: rgba(0, 210, 255, 0.12); color: var(--ed-cyan); border: 1px solid rgba(0, 210, 255, 0.35); font-size: 0.68rem; font-weight: bold;">${escapeHtml(genName)}</span>` : '';
 
     slotRows.push(`
       <div class="bio-slot-row candidate" style="border-left: 3px solid var(--ed-green);">
         <div class="bio-slot-left">
           <span class="bio-badge-candidate">? [Slot ${slotNum}/${bioSig || '?'}]</span>
           ${genusBadge}
-          <span style="color: #f1f5f9; font-weight: 600;">${spName}</span>
+          <span style="color: #f1f5f9; font-weight: 600;">${escapeHtml(spName)}</span>
           ${colorBadge}
           <span class="bio-colony-tag" title="${t('bio_colony_dist')} ${dist}m">📍 ${dist}m</span>
-          ${desc ? `<span style="color: var(--text-dim); font-size: 0.68rem; margin-left: 4px;">(${desc})</span>` : ''}
+          ${desc ? `<span style="color: var(--text-dim); font-size: 0.68rem; margin-left: 4px;">(${escapeHtml(desc)})</span>` : ''}
         </div>
         <div class="bio-slot-payouts">
           <span style="color: #94a3b8;">${t('bio_normal_val')} ${formatCredits(baseVal)}</span>
@@ -1002,7 +1002,7 @@ function renderBodyExobiologyBlock(node) {
         <div class="bio-slot-row candidate" style="opacity: 0.35; filter: grayscale(50%);">
           <div class="bio-slot-left">
             <span class="tag-badge" style="background: rgba(239, 68, 68, 0.12); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.25); font-size: 0.62rem;">✕ ${t('bio_status_excluded') || '除外'}</span>
-            <span style="color: #94a3b8; text-decoration: line-through;">${spName}</span>
+            <span style="color: #94a3b8; text-decoration: line-through;">${escapeHtml(spName)}</span>
             <span class="bio-colony-tag" style="opacity: 0.6;">📍 ${dist}m</span>
           </div>
           <div class="bio-slot-payouts">
@@ -1024,7 +1024,7 @@ function renderBodyExobiologyBlock(node) {
     }
   }
   if (node.atmosphere && node.atmosphere.toLowerCase() !== 'none') {
-    envBadges.push(`<span class="tag-badge" style="background: rgba(255,255,255,0.06); color: var(--text-secondary); font-size:0.68rem;">🌫️ ${node.atmosphere}</span>`);
+    envBadges.push(`<span class="tag-badge" style="background: rgba(255,255,255,0.06); color: var(--text-secondary); font-size:0.68rem;">🌫️ ${escapeHtml(node.atmosphere)}</span>`);
   }
   if (node.surface_temperature) {
     const kelvin = Math.round(node.surface_temperature);
@@ -1082,7 +1082,7 @@ function renderBodyGeoBlock(node) {
     <div class="body-geo-panel">
       <div style="display: flex; align-items: center; gap: 6px;">
         <span style="font-weight: bold; color: var(--ed-orange);">🌋 ${t('geological_signals')} (${geoSig}):</span>
-        <span>${volc || 'Active Geological Formations'}</span>
+        <span>${escapeHtml(volc || 'Active Geological Formations')}</span>
       </div>
       <span class="tag-badge" style="background: rgba(255,113,0,0.2); color: var(--ed-orange); border: 1px solid rgba(255,113,0,0.4); font-size: 0.68rem;">GEO: ${geoSig}</span>
     </div>
@@ -1181,7 +1181,7 @@ function renderCurrentView() {
     container.innerHTML = `
       <div class="unvisited-system-placeholder" style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; min-height: 420px; text-align: center; padding: 40px; color: var(--text-primary);">
         <div style="font-size: 3rem; margin-bottom: 16px;">🌐</div>
-        <div style="font-size: 1.25rem; font-weight: bold; letter-spacing: 1.5px; color: #fff;">${curSysName} <span style="font-size: 0.8rem; color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.5); background: rgba(56, 189, 248, 0.15); border-radius: 4px; padding: 2px 7px; margin-left: 6px;">UNVISITED</span></div>
+        <div style="font-size: 1.25rem; font-weight: bold; letter-spacing: 1.5px; color: #fff;">${escapeHtml(curSysName)} <span style="font-size: 0.8rem; color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.5); background: rgba(56, 189, 248, 0.15); border-radius: 4px; padding: 2px 7px; margin-left: 6px;">UNVISITED</span></div>
         <div style="font-size: 0.9rem; color: #38bdf8; margin-top: 10px;" data-i18n="unvisited_system_desc">この星系はCMDR自身が未訪問です。ゲーム内ジャーナルの探索記録はありません。</div>
         <div style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 10px; max-width: 520px; line-height: 1.5;" data-i18n="unvisited_system_note">外部データベース (EDSM/Spansh) 参照データのみが存在します。自CMDRの探査データとの混同を防ぐため、自動マップ描画は保護されています。</div>
         <button id="btn-preview-external-map" class="btn-page" style="margin-top: 22px; padding: 8px 18px; font-size: 0.82rem; background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.5); color: #38bdf8; cursor: pointer; border-radius: 4px; display: inline-flex; align-items: center; gap: 6px; font-weight: 500;">
@@ -1527,7 +1527,7 @@ async function renderPhysicsReport(container, systemData) {
       }
     } catch (err) {
       console.error('Physics eval fetch failed:', err);
-      container.innerHTML = `<div style="color: var(--ed-red); text-align: center; padding: 40px;">天体物理データの取得に失敗しました: ${err.message}</div>`;
+      container.innerHTML = `<div style="color: var(--ed-red); text-align: center; padding: 40px;">天体物理データの取得に失敗しました: ${escapeHtml(err.message)}</div>`;
       return;
     }
   }
@@ -1776,7 +1776,7 @@ async function renderPhysicsReport(container, systemData) {
         <div>
           <div style="display: flex; align-items: center; gap: 8px;">
             <span style="font-size: 1.4rem;">🌌</span>
-            <span style="font-size: 1.3rem; font-weight: 800; color: #fff;">${sys.star_system}</span>
+            <span style="font-size: 1.3rem; font-weight: 800; color: #fff;">${escapeHtml(sys.star_system)}</span>
             <span class="tag-badge ${rClass}" style="font-size: 0.85rem; padding: 3px 10px;">★ ${rLabel}</span>
           </div>
           <div style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 4px;">
@@ -1875,7 +1875,7 @@ function renderHierarchyTree(container, nodes) {
     const badges = [];
     if (node.bookmark) {
       const bmTitle = (node.bookmark.alias_name ? `[${node.bookmark.alias_name}] ` : '') + (node.bookmark.note_markdown || '');
-      badges.push(`<span class="tag-badge tag-bookmark" title="${bmTitle}">🔖 ${node.bookmark.alias_name || 'BOOKMARK'}</span>`);
+      badges.push(`<span class="tag-badge tag-bookmark" title="${escapeHtml(bmTitle)}">🔖 ${escapeHtml(node.bookmark.alias_name || 'BOOKMARK')}</span>`);
     }
     if (node.landable) badges.push('<span class="tag-badge tag-landable">LANDABLE</span>');
     
@@ -1899,27 +1899,27 @@ function renderHierarchyTree(container, nodes) {
         const isConfirmedGgg = a.type === 'confirmed_ggg' || (a.tag && a.tag.includes('Confirmed GGG'));
         const isGggCand = a.type === 'ggg_candidate' || (a.tag && a.tag.includes('GGG Candidate'));
         if (isConfirmedGgg) {
-          badges.push(`<span class="tag-badge tag-ggg" title="${a.desc || a.tag}">🟢 ${a.tag}</span>`);
+          badges.push(`<span class="tag-badge tag-ggg" title="${escapeHtml(a.desc || a.tag)}">🟢 ${escapeHtml(a.tag)}</span>`);
         } else if (isGggCand) {
           // GGG Candidate anomalies are never badged (unlike Confirmed GGG).
         } else {
-          badges.push(`<span class="tag-badge tag-anomaly">${a.tag}</span>`);
+          badges.push(`<span class="tag-badge tag-anomaly">${escapeHtml(a.tag)}</span>`);
         }
       });
     }
 
     const typeDesc = node.star_type ? `${t('star_type_label')} (${node.star_type})` : (node.planet_class || 'Planet');
     const aliasTag = (node.bookmark && node.bookmark.alias_name)
-      ? `<span class="tag-badge" style="background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.5); font-size: 0.7rem; margin-left: 6px;">🏷️ ${node.bookmark.alias_name}</span>`
+      ? `<span class="tag-badge" style="background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.5); font-size: 0.7rem; margin-left: 6px;">🏷️ ${escapeHtml(node.bookmark.alias_name)}</span>`
       : '';
 
     card.innerHTML = `
       <div class="node-card-top">
         <div class="node-info-left">
-          <div class="body-icon ${iconClass}">${iconLabel}</div>
+          <div class="body-icon ${iconClass}">${escapeHtml(iconLabel)}</div>
           <div class="node-details">
-            <div class="node-name" style="display: flex; align-items: center; flex-wrap: wrap;">${node.body_name}${aliasTag}</div>
-            <div class="node-subtext">${typeDesc}</div>
+            <div class="node-name" style="display: flex; align-items: center; flex-wrap: wrap;">${escapeHtml(node.body_name)}${aliasTag}</div>
+            <div class="node-subtext">${escapeHtml(typeDesc)}</div>
             <div class="node-badges">${badges.join('')}</div>
           </div>
         </div>
@@ -1979,7 +1979,7 @@ function renderFlatBodiesList(container, bodies) {
     if (isTarget) badges.push('<span class="tag-badge" style="background: rgba(0, 210, 255, 0.2); color: var(--ed-cyan); border: 1px solid rgba(0, 210, 255, 0.6); font-weight: bold;">📍 ACTIVE TARGET</span>');
     if (body.bookmark) {
       const bmTitle = (body.bookmark.alias_name ? `[${body.bookmark.alias_name}] ` : '') + (body.bookmark.note_markdown || '');
-      badges.push(`<span class="tag-badge tag-bookmark" title="${bmTitle}">🔖 ${body.bookmark.alias_name || 'BOOKMARK'}</span>`);
+      badges.push(`<span class="tag-badge tag-bookmark" title="${escapeHtml(bmTitle)}">🔖 ${escapeHtml(body.bookmark.alias_name || 'BOOKMARK')}</span>`);
     }
     if (body.landable) badges.push('<span class="tag-badge tag-landable">LANDABLE</span>');
     if (body.star_type) {
@@ -2005,7 +2005,7 @@ function renderFlatBodiesList(container, bodies) {
         const ringTypeLabel = isB ? (appLang === 'en' ? 'Belt' : 'ベルト') : (appLang === 'en' ? 'Ring' : '環');
         const badgeName = appLang === 'en' ? `${info.nameEn || info.name} ${ringTypeLabel}` : `${info.nameJa || info.name}${ringTypeLabel}`;
         const icon = isB ? '🪐' : '💍';
-        badges.push(`<span class="tag-badge" style="background: ${info.bg}; color: ${info.color}; border: 1px solid ${info.border}; font-weight: bold;" title="${r.Name || ''} - ${info.description}">${icon} ${info.icon} ${badgeName}</span>`);
+        badges.push(`<span class="tag-badge" style="background: ${info.bg}; color: ${info.color}; border: 1px solid ${info.border}; font-weight: bold;" title="${escapeHtml(r.Name || '')} - ${escapeHtml(info.description)}">${icon} ${info.icon} ${escapeHtml(badgeName)}</span>`);
       });
     }
     if (state.showMiningGravity && body.landable && body.surface_gravity_g) {
@@ -2023,25 +2023,25 @@ function renderFlatBodiesList(container, bodies) {
         const isConfirmedGgg = a.type === 'confirmed_ggg' || (a.tag && a.tag.includes('Confirmed GGG'));
         const isGggCand = a.type === 'ggg_candidate' || (a.tag && a.tag.includes('GGG Candidate'));
         if (isConfirmedGgg) {
-          badges.push(`<span class="tag-badge tag-ggg" title="${a.desc || a.tag}">🟢 ${a.tag}</span>`);
+          badges.push(`<span class="tag-badge tag-ggg" title="${escapeHtml(a.desc || a.tag)}">🟢 ${escapeHtml(a.tag)}</span>`);
         } else if (isGggCand) {
           // GGG Candidate anomalies are never badged (unlike Confirmed GGG).
         } else {
-          badges.push(`<span class="tag-badge tag-anomaly">${a.tag}</span>`);
+          badges.push(`<span class="tag-badge tag-anomaly">${escapeHtml(a.tag)}</span>`);
         }
       });
     }
     const aliasTag = (body.bookmark && body.bookmark.alias_name)
-      ? `<span class="tag-badge" style="background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.5); font-size: 0.7rem; margin-left: 6px;">🏷️ ${body.bookmark.alias_name}</span>`
+      ? `<span class="tag-badge" style="background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.5); font-size: 0.7rem; margin-left: 6px;">🏷️ ${escapeHtml(body.bookmark.alias_name)}</span>`
       : '';
 
     card.innerHTML = `
       <div class="node-card-top">
         <div class="node-info-left">
-          <div class="body-icon ${iconClass}">${iconLabel}</div>
+          <div class="body-icon ${iconClass}">${escapeHtml(iconLabel)}</div>
           <div class="node-details">
-            <div class="node-name" style="display: flex; align-items: center; flex-wrap: wrap; ${isTarget ? 'color: var(--ed-cyan); font-weight: bold;' : ''}">${body.body_name}${aliasTag}</div>
-            <div class="node-subtext">${body.star_type ? t('star_type_label') + ' ' + body.star_type : body.planet_class || 'Body'}</div>
+            <div class="node-name" style="display: flex; align-items: center; flex-wrap: wrap; ${isTarget ? 'color: var(--ed-cyan); font-weight: bold;' : ''}">${escapeHtml(body.body_name)}${aliasTag}</div>
+            <div class="node-subtext">${body.star_type ? escapeHtml(t('star_type_label')) + ' ' + escapeHtml(body.star_type) : escapeHtml(body.planet_class || 'Body')}</div>
             <div class="node-badges">${badges.join('')}</div>
           </div>
         </div>
@@ -2124,14 +2124,14 @@ function renderBioOnlyView(container, bodies) {
     card.innerHTML = `
       <div class="node-card-top">
         <div class="node-info-left">
-          <div class="body-icon ${iconClass}">${iconLabel}</div>
+          <div class="body-icon ${iconClass}">${escapeHtml(iconLabel)}</div>
           <div class="node-details">
             <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-              <div class="node-name" style="color: var(--ed-green); font-weight: bold;">${body.body_name}</div>
+              <div class="node-name" style="color: var(--ed-green); font-weight: bold;">${escapeHtml(body.body_name)}</div>
               ${targetBadge}
               ${completionBadge}
             </div>
-            <div class="node-subtext">${body.planet_class || 'Landable World'}</div>
+            <div class="node-subtext">${escapeHtml(body.planet_class || 'Landable World')}</div>
           </div>
         </div>
         <div class="node-info-right">
@@ -5556,10 +5556,10 @@ async function initSettingsModal() {
 
       const info = document.createElement('div');
       info.style.cssText = 'flex: 1; min-width: 0;';
-      const versionHtml = version ? ` <span style="color: var(--text-secondary); font-weight: normal; font-size: 0.72rem;">v${version}</span>` : '';
+      const versionHtml = version ? ` <span style="color: var(--text-secondary); font-weight: normal; font-size: 0.72rem;">v${escapeHtml(version)}</span>` : '';
       info.innerHTML = `
-        <div style="font-weight: bold; color: #fff; font-size: 0.85rem;">${title}${versionHtml}</div>
-        <div style="color: var(--text-secondary); font-size: 0.75rem; margin-top: 2px;">${description || ''}</div>
+        <div style="font-weight: bold; color: #fff; font-size: 0.85rem;">${escapeHtml(title)}${versionHtml}</div>
+        <div style="color: var(--text-secondary); font-size: 0.75rem; margin-top: 2px;">${escapeHtml(description || '')}</div>
         ${errNote || ''}
       `;
 
@@ -5625,7 +5625,7 @@ async function initSettingsModal() {
 
     for (const addon of standaloneAddons) {
       const errNote = addon.enabled && !addon.loaded
-        ? `<div style="color: #f87171; font-size: 0.7rem; margin-top: 2px;">⚠️ ${(typeof t === 'function' ? t('addon_load_error') : null) || '読み込みエラー'}: ${addon.error || ''}</div>`
+        ? `<div style="color: #f87171; font-size: 0.7rem; margin-top: 2px;">⚠️ ${(typeof t === 'function' ? t('addon_load_error') : null) || '読み込みエラー'}: ${escapeHtml(addon.error || '')}</div>`
         : '';
       addonToggleList.appendChild(buildRow({
         title: displayName(addon),
@@ -5993,7 +5993,7 @@ function initExportImportModals() {
       toast.innerHTML = `
         <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
           <div style="display: flex; align-items: center; gap: 8px; font-weight: bold; color: var(--ed-cyan); font-size: 0.9rem;">
-            <span>${msg}</span>
+            <span>${escapeHtml(msg)}</span>
           </div>
           <button id="btn-toast-close" class="view-btn" style="padding: 2px 8px; font-size: 0.75rem; cursor: pointer;">
             ${closeText}
@@ -6011,10 +6011,10 @@ function initExportImportModals() {
 
       toast.innerHTML = `
         <div style="display: flex; align-items: center; gap: 8px; font-weight: bold; color: var(--ed-cyan); font-size: 0.95rem; margin-bottom: 6px;">
-          <span>🌐</span> <span>${title}</span>
+          <span>🌐</span> <span>${escapeHtml(title)}</span>
         </div>
         <div style="color: #cbd5e1; font-size: 0.78rem; word-break: break-all; margin-bottom: 8px; background: rgba(0,0,0,0.3); padding: 6px 8px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.08);">
-          <b>${saveLocLabel}</b> <code style="color: #38bdf8;">${filePath || defaultDir}</code>
+          <b>${saveLocLabel}</b> <code style="color: #38bdf8;">${escapeHtml(filePath || defaultDir)}</code>
         </div>
         <div style="color: #94a3b8; font-size: 0.72rem; margin-bottom: 10px;">
           ${aiFeatureHtml}
@@ -6613,7 +6613,7 @@ function initExportImportModals() {
       if (importSystemsList) {
         importSystemsList.innerHTML = (preview.systems || []).map(s => `
           <div style="display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,0.05);">
-            <span style="font-weight: bold; color: var(--ed-orange);">${s.star_system || 'System ' + s.system_address}</span>
+            <span style="font-weight: bold; color: var(--ed-orange);">${escapeHtml(s.star_system || 'System ' + s.system_address)}</span>
             <span style="color: var(--text-secondary);">${s.body_count || 0} 天体</span>
           </div>
         `).join('');
@@ -6764,12 +6764,14 @@ function initGalacticExtremes() {
       directions.forEach(d => {
         const item = ext[d.key];
         if (item) {
-          const sysName = escapeHtml(item.star_system || 'Unknown');
+          const rawSysName = item.star_system || 'Unknown';
+          const sysName = escapeHtml(rawSysName);
+          const tipSysAttr = escapeHtml((typeof t === 'function' && t('tip_show_extreme_system', { sys: rawSysName })) || (rawSysName + ' を表示'));
           const distSol = Number(item.distance_sol).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
           const dateStr = item.last_visited ? item.last_visited.replace('T', ' ').substring(0, 16) : '--';
           const visitText = `${item.visit_count || 1}回`;
           html += `
-            <div class="extreme-card" style="background: rgba(15, 23, 42, 0.7); border: 1px solid ${d.border}; border-radius: 6px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; cursor: pointer; transition: all 0.2s ease; position: relative;" data-sys-addr="${item.system_address}" title="${(typeof t === 'function' && t('tip_show_extreme_system', { sys: sysName })) || (sysName + ' を表示')}">
+            <div class="extreme-card" style="background: rgba(15, 23, 42, 0.7); border: 1px solid ${d.border}; border-radius: 6px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; cursor: pointer; transition: all 0.2s ease; position: relative;" data-sys-addr="${item.system_address}" title="${tipSysAttr}">
               <div style="display: flex; align-items: center; justify-content: space-between; gap: 6px;">
                 <span style="font-weight: bold; font-size: 0.8rem; color: #fff; display: flex; align-items: center; gap: 5px;">
                   <span>${d.icon}</span> ${d.title}
