@@ -192,7 +192,8 @@ def update_ring_hotspots_in_db(
     body_name: str,
     star_system: str,
     ring_name: str,
-    hotspot_counts: Dict[str, int]
+    hotspot_counts: Dict[str, int],
+    commit: bool = True
 ) -> str:
     """
     Updates or inserts body_bookmarks record with the scanned ring hotspots.
@@ -219,6 +220,7 @@ def update_ring_hotspots_in_db(
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (system_address, body_id, body_name, star_system, alias_name, updated_note, now, now))
 
-    conn.commit()
+    if commit:
+        conn.commit()
     return updated_note
 

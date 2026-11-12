@@ -8,6 +8,7 @@ previously an always-on core feature.
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
+from contextlib import closing
 from app.db.database import get_db_connection
 from app.services.edsm_service import edsm_service
 
@@ -19,11 +20,10 @@ def register(ctx):
     def sync_system_edsm(system_address: int):
         """Directly triggers a high-priority EDSM query and celestial body
         completion for this system."""
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute("SELECT star_system FROM systems WHERE system_address = ?", (system_address,))
-        row = c.fetchone()
-        conn.close()
+        with closing(get_db_connection()) as conn:
+            c = conn.cursor()
+            c.execute("SELECT star_system FROM systems WHERE system_address = ?", (system_address,))
+            row = c.fetchone()
         if not row or not row["star_system"]:
             return JSONResponse({"error": "System not found"}, status_code=404)
 

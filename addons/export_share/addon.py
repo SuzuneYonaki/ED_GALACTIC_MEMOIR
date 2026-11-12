@@ -16,6 +16,7 @@ touches the Orrery tab or core system browsing.
 """
 import json
 import subprocess
+from contextlib import closing
 from pathlib import Path
 from typing import Optional, List
 
@@ -23,7 +24,7 @@ from fastapi import APIRouter, UploadFile, File
 from fastapi.responses import HTMLResponse, Response, JSONResponse
 from pydantic import BaseModel
 
-from app.config import BASE_DIR, EXPORTS_DIR
+from app.config import BASE_DIR, DATA_DIR, EXPORTS_DIR
 from app.db.database import get_db_connection, get_mining_sites
 from app.live.rhino.tracker import extract_rhino_mining_sites
 from app.services.export_service import (
@@ -81,34 +82,31 @@ def register(ctx):
         is_anonymous: bool = False,
         lang: str = "ja"
     ):
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute("SELECT * FROM systems WHERE system_address = ?", (system_address,))
-        sys_row = c.fetchone()
-        if not sys_row:
-            conn.close()
-            return JSONResponse({"error": "System not found"}, status_code=404)
+        with closing(get_db_connection()) as conn:
+            c = conn.cursor()
+            c.execute("SELECT * FROM systems WHERE system_address = ?", (system_address,))
+            sys_row = c.fetchone()
+            if not sys_row:
+                return JSONResponse({"error": "System not found"}, status_code=404)
 
-        if (sys_row["visit_count"] or 0) == 0:
-            conn.close()
-            err_msg = "Cannot export Web Share HTML for unvisited external reference systems." if lang == "en" else "外部参照（未訪問）星系のため、Web共有HTMLのエクスポートは行えません。"
-            return JSONResponse({"error": err_msg}, status_code=403)
+            if (sys_row["visit_count"] or 0) == 0:
+                err_msg = "Cannot export Web Share HTML for unvisited external reference systems." if lang == "en" else "外部参照（未訪問）星系のため、Web共有HTMLのエクスポートは行えません。"
+                return JSONResponse({"error": err_msg}, status_code=403)
 
-        system_data = dict(sys_row)
-        c.execute("SELECT * FROM bodies WHERE system_address = ? ORDER BY distance_from_arrival_ls ASC, body_id ASC", (system_address,))
-        bodies = [dict(r) for r in c.fetchall()]
+            system_data = dict(sys_row)
+            c.execute("SELECT * FROM bodies WHERE system_address = ? ORDER BY distance_from_arrival_ls ASC, body_id ASC", (system_address,))
+            bodies = [dict(r) for r in c.fetchall()]
 
-        c.execute("SELECT * FROM surface_mining_activities WHERE system_address = ? ORDER BY timestamp DESC", (system_address,))
-        raw_mining = [dict(r) for r in c.fetchall()]
-        db_sites = get_mining_sites(conn, system_address)
-        if db_sites:
-            mining_sites = db_sites
-        else:
-            mining_sites = extract_rhino_mining_sites(raw_mining, include_raw=True)
+            c.execute("SELECT * FROM surface_mining_activities WHERE system_address = ? ORDER BY timestamp DESC", (system_address,))
+            raw_mining = [dict(r) for r in c.fetchall()]
+            db_sites = get_mining_sites(conn, system_address)
+            if db_sites:
+                mining_sites = db_sites
+            else:
+                mining_sites = extract_rhino_mining_sites(raw_mining, include_raw=True)
 
-        c.execute("SELECT * FROM body_bookmarks WHERE system_address = ?", (system_address,))
-        bookmarks = [dict(r) for r in c.fetchall()]
-        conn.close()
+            c.execute("SELECT * FROM body_bookmarks WHERE system_address = ?", (system_address,))
+            bookmarks = [dict(r) for r in c.fetchall()]
 
         html_content = generate_standalone_html(
             system_data=system_data,
@@ -139,18 +137,16 @@ def register(ctx):
 
     @router.get("/export/snippet/{system_address}")
     def export_snippet_endpoint(system_address: int, lang: str = "ja"):
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute("SELECT * FROM systems WHERE system_address = ?", (system_address,))
-        sys_row = c.fetchone()
-        if not sys_row:
-            conn.close()
-            return JSONResponse({"error": "System not found"}, status_code=404)
+        with closing(get_db_connection()) as conn:
+            c = conn.cursor()
+            c.execute("SELECT * FROM systems WHERE system_address = ?", (system_address,))
+            sys_row = c.fetchone()
+            if not sys_row:
+                return JSONResponse({"error": "System not found"}, status_code=404)
 
-        system_data = dict(sys_row)
-        c.execute("SELECT * FROM bodies WHERE system_address = ? ORDER BY distance_from_arrival_ls ASC, body_id ASC", (system_address,))
-        bodies = [dict(r) for r in c.fetchall()]
-        conn.close()
+            system_data = dict(sys_row)
+            c.execute("SELECT * FROM bodies WHERE system_address = ? ORDER BY distance_from_arrival_ls ASC, body_id ASC", (system_address,))
+            bodies = [dict(r) for r in c.fetchall()]
 
         snippet = generate_share_snippet(system_data, bodies, lang=lang)
         return {"status": "ok", "system_address": system_address, "snippet": snippet}
@@ -160,39 +156,36 @@ def register(ctx):
         """Generates a ComfyUI-style SNS summary PNG card (1200x630) with embedded
         .edsys package metadata. Deliberately omits Orrery and Credit payout
         values to entice viewers to drop into the app."""
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute("SELECT * FROM systems WHERE system_address = ?", (system_address,))
-        sys_row = c.fetchone()
-        if not sys_row:
-            conn.close()
-            return JSONResponse({"error": "System not found"}, status_code=404)
+        with closing(get_db_connection()) as conn:
+            c = conn.cursor()
+            c.execute("SELECT * FROM systems WHERE system_address = ?", (system_address,))
+            sys_row = c.fetchone()
+            if not sys_row:
+                return JSONResponse({"error": "System not found"}, status_code=404)
 
-        if (sys_row["visit_count"] or 0) == 0:
-            conn.close()
-            err_msg = "Cannot export summary image for unvisited external reference systems." if lang == "en" else "外部参照（未訪問）星系のため、サマリー画像のエクスポートは行えません。"
-            return JSONResponse({"error": err_msg}, status_code=403)
+            if (sys_row["visit_count"] or 0) == 0:
+                err_msg = "Cannot export summary image for unvisited external reference systems." if lang == "en" else "外部参照（未訪問）星系のため、サマリー画像のエクスポートは行えません。"
+                return JSONResponse({"error": err_msg}, status_code=403)
 
-        system_data = dict(sys_row)
-        c.execute("SELECT * FROM bodies WHERE system_address = ? ORDER BY distance_from_arrival_ls ASC, body_id ASC", (system_address,))
-        bodies = [dict(r) for r in c.fetchall()]
+            system_data = dict(sys_row)
+            c.execute("SELECT * FROM bodies WHERE system_address = ? ORDER BY distance_from_arrival_ls ASC, body_id ASC", (system_address,))
+            bodies = [dict(r) for r in c.fetchall()]
 
-        cmdr_name = "Explorer"
-        try:
-            c.execute("SELECT commander_name FROM commanders ORDER BY last_seen DESC LIMIT 1")
-            cmdr_row = c.fetchone()
-            if cmdr_row and cmdr_row["commander_name"]:
-                cmdr_name = cmdr_row["commander_name"]
-        except Exception:
-            pass
+            cmdr_name = "Explorer"
+            try:
+                c.execute("SELECT commander_name FROM commanders ORDER BY last_seen DESC LIMIT 1")
+                cmdr_row = c.fetchone()
+                if cmdr_row and cmdr_row["commander_name"]:
+                    cmdr_name = cmdr_row["commander_name"]
+            except Exception:
+                pass
 
-        package = create_edsys_package(
-            conn,
-            system_addresses=[system_address],
-            cmdr_name=cmdr_name,
-            notes="Exported via Summary PNG Card"
-        )
-        conn.close()
+            package = create_edsys_package(
+                conn,
+                system_addresses=[system_address],
+                cmdr_name=cmdr_name,
+                notes="Exported via Summary PNG Card"
+            )
 
         png_bytes = generate_summary_png_card(
             system_data=system_data,
@@ -219,20 +212,37 @@ def register(ctx):
             }
         )
 
+    def _is_allowed_reveal_path(p: Path) -> bool:
+        try:
+            rp = p.resolve()
+            allowed_roots = [
+                EXPORTS_DIR.resolve(),
+                DATA_DIR.resolve(),
+                (Path.home() / "Downloads").resolve(),
+            ]
+            return any(rp == root or root in rp.parents for root in allowed_roots)
+        except Exception:
+            return False
+
     @router.post("/export/open_location")
     def open_export_location(payload: OpenLocationRequest):
         target = Path(payload.path) if payload.path else EXPORTS_DIR
         if not target.is_absolute():
-            target = (BASE_DIR / target).resolve()
+            target = (EXPORTS_DIR / target).resolve()
+        else:
+            target = target.resolve()
+
+        if not _is_allowed_reveal_path(target):
+            return JSONResponse({"error": "Access outside allowed export directories is forbidden"}, status_code=403)
 
         if not target.exists():
-            target = EXPORTS_DIR
+            target = EXPORTS_DIR.resolve()
 
         try:
             if target.is_file():
-                subprocess.Popen(f'explorer.exe /select,"{target}"')
+                subprocess.Popen(["explorer.exe", "/select,", str(target)], shell=False)
             else:
-                subprocess.Popen(f'explorer.exe "{target}"')
+                subprocess.Popen(["explorer.exe", str(target)], shell=False)
             return {"success": True, "opened": str(target)}
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
@@ -310,7 +320,7 @@ def register(ctx):
 
             if payload.reveal:
                 try:
-                    subprocess.Popen(f'explorer /select,"{str(out_path.resolve())}"', shell=True)
+                    subprocess.Popen(["explorer.exe", "/select,", str(out_path.resolve())], shell=False)
                 except Exception as e:
                     print(f"Could not open explorer: {e}")
 
@@ -326,10 +336,15 @@ def register(ctx):
 
     @router.post("/system/reveal-file")
     def reveal_file_in_explorer(payload: RevealPathRequest):
-        p = Path(payload.file_path).resolve()
+        try:
+            p = Path(payload.file_path).resolve()
+        except Exception:
+            return JSONResponse({"error": "Invalid path"}, status_code=400)
+        if not _is_allowed_reveal_path(p):
+            return JSONResponse({"error": "Access outside allowed export directories is forbidden"}, status_code=403)
         if p.exists():
             try:
-                subprocess.Popen(f'explorer /select,"{str(p)}"', shell=True)
+                subprocess.Popen(["explorer.exe", "/select,", str(p)], shell=False)
                 return {"status": "ok"}
             except Exception as e:
                 return JSONResponse({"error": str(e)}, status_code=500)
@@ -371,12 +386,16 @@ def register(ctx):
             "systems": preview_systems
         }
 
+    MAX_PNG_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
+
     @router.post("/import/png")
     async def import_png_preview_endpoint(file: UploadFile = File(...)):
         """Extracts embedded .edsys package from an uploaded ComfyUI-style PNG
         summary card, then returns the package preview structure."""
         try:
-            contents = await file.read()
+            contents = await file.read(MAX_PNG_UPLOAD_BYTES + 1)
+            if len(contents) > MAX_PNG_UPLOAD_BYTES:
+                return JSONResponse({"error": "File too large (max 10 MB)."}, status_code=413)
             pkg = extract_package_from_png(contents)
             if not pkg:
                 return JSONResponse(
@@ -400,7 +419,9 @@ def register(ctx):
 
         conn = get_db_connection()
         try:
-            res = import_edsys_package(conn, pkg, overwrite=payload.overwrite, allow_invalid_signature=True)
+            res = import_edsys_package(conn, pkg, overwrite=payload.overwrite, allow_invalid_signature=False)
+            if not res.get("success", True):
+                return JSONResponse({"error": res.get("error", "署名検証に失敗しました")}, status_code=400)
             return res
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=400)

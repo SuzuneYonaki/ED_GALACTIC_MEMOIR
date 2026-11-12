@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Any, Optional
 
 from app.config import APP_VERSION
+from contextlib import closing
 from app.db.database import get_db_connection
 
 CACHE_TTL_SEC = 900.0  # 15 minutes cache
@@ -48,11 +49,10 @@ class FootprintService:
                 return self._cache[cache_key]
 
         # 1. First, check if the system exists in our local DB
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute("SELECT system_address, star_system, visit_count, total_potential_value FROM systems WHERE LOWER(star_system) = LOWER(?) LIMIT 1", (clean_name,))
-        row = c.fetchone()
-        conn.close()
+        with closing(get_db_connection()) as conn:
+            c = conn.cursor()
+            c.execute("SELECT system_address, star_system, visit_count, total_potential_value FROM systems WHERE LOWER(star_system) = LOWER(?) LIMIT 1", (clean_name,))
+            row = c.fetchone()
 
         if row:
             result = {

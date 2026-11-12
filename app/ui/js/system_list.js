@@ -201,11 +201,11 @@ function renderSystemList() {
       const bmText = firstBm.alias_name ? `🔖 ${firstBm.alias_name}` : `🔖 ${firstBm.body_name}`;
       const moreBm = sys.bookmarks.length > 1 ? ` (+${sys.bookmarks.length - 1})` : '';
       const bmTip = sys.bookmarks.map(b => (b.alias_name ? `[${b.alias_name}] ` : '') + b.body_name + (b.note_snippet ? `: ${b.note_snippet}` : '')).join('\n');
-      tags.push(`<span class="tag-badge tag-bookmark" title="${bmTip}">${bmText}${moreBm}</span>`);
+      tags.push(`<span class="tag-badge tag-bookmark" title="${escapeHtml(bmTip)}">${escapeHtml(bmText)}${escapeHtml(moreBm)}</span>`);
     }
     if (sys.is_shared) {
       const sharedTip = sys.shared_by ? `${t('shared_by_label')}: ${sys.shared_by}` : t('shared_system');
-      tags.push(`<span class="tag-badge tag-shared" style="background: rgba(167, 139, 250, 0.2); color: #c4b5fd; border: 1px solid rgba(167, 139, 250, 0.6); font-weight: bold;" title="${sharedTip}">🤝 Shared</span>`);
+      tags.push(`<span class="tag-badge tag-shared" style="background: rgba(167, 139, 250, 0.2); color: #c4b5fd; border: 1px solid rgba(167, 139, 250, 0.6); font-weight: bold;" title="${escapeHtml(sharedTip)}">🤝 Shared</span>`);
     }
     if (!sys.visit_count) {
       tags.push(`<span class="tag-badge tag-external" style="background: rgba(56, 189, 248, 0.18); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.5); font-weight: bold;" title="${t('badge_external_unvisited_tip') || '未訪問・EDSM外部参照星系（Web共有/パッケージ書出は不可）'}">${t('badge_external_unvisited') || '🌐 外部参照 (未訪問)'}</span>`);
@@ -251,7 +251,7 @@ function renderSystemList() {
         tipParts.push(`絶対等級: ${Number(sys.main_star_absolute_magnitude).toFixed(1)} Mag`);
       }
       const starTip = escapeHtml(tipParts.join(' | '));
-      mainStar = `<span class="tag-badge" style="background: ${style.bg}; color: ${style.text}; border: 1px solid ${style.border}; margin-left: 6px; font-weight: bold;" title="${starTip}">${starLabel}</span>`;
+      mainStar = `<span class="tag-badge" style="background: ${style.bg}; color: ${style.text}; border: 1px solid ${style.border}; margin-left: 6px; font-weight: bold;" title="${starTip}">${escapeHtml(starLabel)}</span>`;
     }
 
     const sysName = sys.star_system || (`System ${sys.system_address || ''}`);
@@ -306,7 +306,7 @@ function renderSystemList() {
             .replace('{temp}', lb.temp_k ? lb.temp_k + 'K' : '--')
             .replace('{ring}', ringStr)
             .replace('{mining}', miningStr);
-          return `<span class="tag-badge" style="${colorStyle} font-size: 0.67rem; padding: 1px 4px; margin-right: 2px;" title="${tip}">${icon} ${lb.type}${statSuffix}</span>`;
+          return `<span class="tag-badge" style="${colorStyle} font-size: 0.67rem; padding: 1px 4px; margin-right: 2px;" title="${escapeHtml(tip)}">${icon} ${escapeHtml(lb.type)}${escapeHtml(statSuffix)}</span>`;
         });
         if (matchedBodies.length > 6) {
           const countDiff = matchedBodies.length - 6;
@@ -362,7 +362,7 @@ function renderSystemList() {
 
     card.innerHTML = `
       <div class="system-card-header">
-        <span class="system-card-title" title="${sysName}">${sysName}</span>
+        <span class="system-card-title" title="${escapeHtml(sysName)}">${escapeHtml(sysName)}</span>
         <span class="system-card-value">${formatCredits(sys.total_potential_value)}</span>
       </div>
       <div class="system-card-sub-header">
@@ -534,7 +534,7 @@ function renderSystemHeader() {
       if (sys.edsm_registered === 1) {
         const discText = sys.edsm_first_discoverer ? `⭐ EDSM: ${sys.edsm_first_discoverer}` : (t('edsm_found_badge') || '⭐ EDSM登録済');
         const tip = (t('edsm_found_tip') || 'EDSM登録済 / 発見者: {discoverer}').replace('{discoverer}', sys.edsm_first_discoverer || (t('edsm_unknown_discoverer') || '不明'));
-        edsmBadgeEl.innerHTML = `<span class="tag-badge tag-edsm-found" title="${tip}">${discText}</span>`;
+        edsmBadgeEl.innerHTML = `<span class="tag-badge tag-edsm-found" title="${escapeHtml(tip)}">${escapeHtml(discText)}</span>`;
       } else {
         edsmBadgeEl.innerHTML = `<span class="tag-badge tag-edsm-unreg" title="${t('edsm_unreg_full_tip') || 'EDSM未登録 / 探査データを提出して1st Discoverを登録できます！'}">${t('edsm_unreg_full_badge') || '✨ 1st Discover 登録可能 (EDSM未登録)'}</span>`;
       }
@@ -821,7 +821,7 @@ function renderSystemHeader() {
     if (sharedBadge) {
       if (sys.is_shared) {
         const byText = sys.shared_by ? `${t('shared_by_label')}: ${sys.shared_by}` : t('shared_system');
-        sharedBadge.innerHTML = `<span class="tag-badge tag-shared" style="background: rgba(167, 139, 250, 0.25); color: #c4b5fd; border: 1px solid #a78bfa; font-weight: bold;" title="${byText}">🤝 ${t('shared_system')}</span>`;
+        sharedBadge.innerHTML = `<span class="tag-badge tag-shared" style="background: rgba(167, 139, 250, 0.25); color: #c4b5fd; border: 1px solid #a78bfa; font-weight: bold;" title="${escapeHtml(byText)}">🤝 ${t('shared_system')}</span>`;
         sharedBadge.style.display = 'inline-flex';
       } else {
         sharedBadge.innerHTML = '';
@@ -1216,10 +1216,12 @@ function renderHeaderUpdateState() {
   const updateInfo = (typeof state !== 'undefined' && state.updateInfo) ? state.updateInfo : null;
   if (!updateInfo) return;
 
+  const hasSafeReleaseUrl = (typeof updateInfo.release_url === 'string' && /^https?:\/\//i.test(updateInfo.release_url.trim()));
+
   if (updateInfo.has_update) {
     if (leftUpdateBtn) {
       leftUpdateBtn.style.display = 'inline-flex';
-      if (updateInfo.release_url) {
+      if (hasSafeReleaseUrl) {
         leftUpdateBtn.href = updateInfo.release_url;
       }
       if (leftUpdateVersion) {
@@ -1235,7 +1237,7 @@ function renderHeaderUpdateState() {
 
       if (indicator) {
         indicator.style.display = isCollapsed ? 'none' : 'inline-flex';
-        if (updateInfo.release_url) {
+        if (hasSafeReleaseUrl) {
           indicator.href = updateInfo.release_url;
         }
       }
@@ -1251,11 +1253,11 @@ function renderHeaderUpdateState() {
         summaryEl.textContent = summaryText;
         summaryEl.title = summaryText;
       }
-      if (bannerLink && updateInfo.release_url) {
+      if (bannerLink && hasSafeReleaseUrl) {
         bannerLink.href = updateInfo.release_url;
         bannerLink.title = (updateInfo.summary || updateInfo.release_name) ? `${updateInfo.summary || updateInfo.release_name} (${updateInfo.release_url})` : updateInfo.release_url;
       }
-      if (linkEl && updateInfo.release_url) {
+      if (linkEl && hasSafeReleaseUrl) {
         linkEl.href = updateInfo.release_url;
       }
     }

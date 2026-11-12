@@ -6,6 +6,10 @@
  * - Correctly parents moons like '1 e', '1 f' under Planet 1.
  */
 
+if (typeof escapeHtml !== 'function') {
+  var escapeHtml = (v) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 function getBodyShortName(fullName, systemName) {
   if (!fullName) return '';
   const sys = systemName || (state.selectedSystem ? state.selectedSystem.star_system : '');
@@ -1035,7 +1039,7 @@ function createSysMapBodyElement(body, role = 'planet', systemName = '') {
     const gggTitle = typeof t === 'function'
       ? t('ggg_confirmed_badge_title', { variant: variantStr })
       : `確定グリーンガスジャイアント: ${variantStr}`;
-    badgeList.push(`<span class="sysmap-mini-badge ggg-confirmed" title="${gggTitle}">[GGG]</span>`);
+    badgeList.push(`<span class="sysmap-mini-badge ggg-confirmed" title="${escapeHtml(gggTitle)}">[GGG]</span>`);
   }
   if (isBary) {
     const isMulti = body.starGroup && body.starGroup.length > 2;
@@ -1059,14 +1063,14 @@ function createSysMapBodyElement(body, role = 'planet', systemName = '') {
     badgeList.push('<span class="sysmap-mini-badge first-disc">⭐ 1st</span>');
   } else if (body.scan_type === 'EDSM_Known') {
     const extDiscoverer = body.edsm_discovered_by ? ` (CMDR ${body.edsm_discovered_by})` : '';
-    badgeList.push(`<span class="sysmap-mini-badge edsm-known" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4);" title="EDSM外部参照データ${extDiscoverer}">🌐 EDSM</span>`);
+    badgeList.push(`<span class="sysmap-mini-badge edsm-known" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4);" title="EDSM外部参照データ${escapeHtml(extDiscoverer)}">🌐 EDSM</span>`);
   }
 
   // Stellar Luminosity & Radiation Output Badges
   if (body.star_type) {
     const lum = (body.luminosity || '').trim();
     if (lum) {
-      badgeList.push(`<span class="sysmap-mini-badge lum" style="background: rgba(251, 146, 60, 0.2); color: #fb923c; border: 1px solid rgba(251, 146, 60, 0.5); font-weight: bold;" title="光度階級 (Luminosity Class): ${lum}">🌟 ${lum}</span>`);
+      badgeList.push(`<span class="sysmap-mini-badge lum" style="background: rgba(251, 146, 60, 0.2); color: #fb923c; border: 1px solid rgba(251, 146, 60, 0.5); font-weight: bold;" title="光度階級 (Luminosity Class): ${escapeHtml(lum)}">🌟 ${escapeHtml(lum)}</span>`);
     }
     if (body.absolute_magnitude !== null && body.absolute_magnitude !== undefined) {
       const magVal = Number(body.absolute_magnitude).toFixed(1);
@@ -1077,7 +1081,7 @@ function createSysMapBodyElement(body, role = 'planet', systemName = '') {
   // Body Bookmark Badge
   if (body.bookmark) {
     const bmTitle = (body.bookmark.alias_name ? `[${body.bookmark.alias_name}] ` : '') + (body.bookmark.note_markdown || '');
-    badgeList.push(`<span class="sysmap-mini-badge bookmark" title="${bmTitle}">🔖 ${body.bookmark.alias_name || 'BM'}</span>`);
+    badgeList.push(`<span class="sysmap-mini-badge bookmark" title="${escapeHtml(bmTitle)}">🔖 ${escapeHtml(body.bookmark.alias_name || 'BM')}</span>`);
   }
 
   // Gravity & Temperature Display (mining support toggles)
@@ -1104,21 +1108,21 @@ function createSysMapBodyElement(body, role = 'planet', systemName = '') {
       const p = ringParser(r.RingClass);
       return lang === 'en' ? (p.nameEn || p.name) : (p.nameJa || p.name);
     })));
-    badgeList.push(`<span class="sysmap-mini-badge ring-${primaryRingKey}" style="background: ${primaryInfo.bg}; color: ${primaryInfo.color}; border: 1px solid ${primaryInfo.border};">💍 ${primaryInfo.icon} ${ringLabels.join('/')}</span>`);
+    badgeList.push(`<span class="sysmap-mini-badge ring-${primaryRingKey}" style="background: ${primaryInfo.bg}; color: ${primaryInfo.color}; border: 1px solid ${primaryInfo.border};">💍 ${primaryInfo.icon} ${escapeHtml(ringLabels.join('/'))}</span>`);
   }
 
   if (isAsteroidBelt) {
     const primaryBeltInfo = ringParser(body.ring_class);
     const beltSuffix = lang === 'en' ? ' Belt' : 'ベルト';
     const beltName = lang === 'en' ? (primaryBeltInfo.nameEn || primaryBeltInfo.name) : (primaryBeltInfo.nameJa || primaryBeltInfo.name);
-    badgeList.push(`<span class="sysmap-mini-badge belt" style="background: ${primaryBeltInfo.bg}; color: ${primaryBeltInfo.color}; border: 1px solid ${primaryBeltInfo.border}; font-weight: bold;">🪐 ${primaryBeltInfo.icon} ${beltName}${beltSuffix}</span>`);
+    badgeList.push(`<span class="sysmap-mini-badge belt" style="background: ${primaryBeltInfo.bg}; color: ${primaryBeltInfo.color}; border: 1px solid ${primaryBeltInfo.border}; font-weight: bold;">🪐 ${primaryBeltInfo.icon} ${escapeHtml(beltName)}${beltSuffix}</span>`);
     if (body.reserve_level) {
       const reserveParser = (typeof parseReserveLevel === 'function')
         ? parseReserveLevel
         : ((typeof window !== 'undefined' && typeof window.parseReserveLevel === 'function') ? window.parseReserveLevel : null);
       const resInfo = reserveParser ? reserveParser(body.reserve_level) : null;
       const resLabel = resInfo ? (lang === 'en' ? resInfo.en : resInfo.ja) : body.reserve_level;
-      badgeList.push(`<span class="sysmap-mini-badge" style="background: rgba(34, 197, 94, 0.15); color: #22c55e; border: 1px solid rgba(34, 197, 94, 0.4); font-weight: bold;">${resLabel}</span>`);
+      badgeList.push(`<span class="sysmap-mini-badge" style="background: rgba(34, 197, 94, 0.15); color: #22c55e; border: 1px solid rgba(34, 197, 94, 0.4); font-weight: bold;">${escapeHtml(resLabel)}</span>`);
     }
   }
 
@@ -1160,7 +1164,7 @@ function createSysMapBodyElement(body, role = 'planet', systemName = '') {
 
     const badgeText = highlights.length > 0 ? `🎯 ${highlights.slice(0, 2).join(' ')}` : `🎯 HS: ${hotspotCount}`;
     const hsTitle = (typeof t === 'function' ? t('ring_hotspot_title', { minerals: hsSummary }) : null) || ((lang === 'en' ? 'Ring Hotspots: ' : '環ホットスポット: ') + hsSummary);
-    badgeList.push(`<span class="sysmap-mini-badge hotspot" style="background: rgba(250, 204, 21, 0.25); color: #facc15; border: 1px solid rgba(250, 204, 21, 0.6); font-weight: bold;" title="${hsTitle}">${badgeText}</span>`);
+    badgeList.push(`<span class="sysmap-mini-badge hotspot" style="background: rgba(250, 204, 21, 0.25); color: #facc15; border: 1px solid rgba(250, 204, 21, 0.6); font-weight: bold;" title="${escapeHtml(hsTitle)}">${escapeHtml(badgeText)}</span>`);
   }
 
   // Sphere HTML with optional ring, belt, and landable arc
@@ -1194,7 +1198,7 @@ function createSysMapBodyElement(body, role = 'planet', systemName = '') {
       ${landableArcHtml}
       ${ringHtml}
       <div class="sysmap-sphere ${effectiveIconClass} ${role}">
-        <span class="sysmap-icon-label${starClassAttr}"${starStyleAttr}>${effectiveIconLabel}</span>
+        <span class="sysmap-icon-label${starClassAttr}"${starStyleAttr}>${escapeHtml(effectiveIconLabel)}</span>
       </div>
     `;
   }
@@ -1239,7 +1243,7 @@ function createSysMapBodyElement(body, role = 'planet', systemName = '') {
     ? t('bookmark_alias_title', { alias: body.bookmark.alias_name })
     : ((lang === 'en' ? 'Alias: ' : 'エイリアス: ') + ((body.bookmark && body.bookmark.alias_name) || ''));
   const aliasHtml = (body.bookmark && body.bookmark.alias_name)
-    ? `<div class="sysmap-body-alias" title="${aliasTitle}">🏷️ ${body.bookmark.alias_name}</div>`
+    ? `<div class="sysmap-body-alias" title="${escapeHtml(aliasTitle)}">🏷️ ${escapeHtml(body.bookmark.alias_name)}</div>`
     : '';
 
   // Price Badge (FSS or DSS Bonus) at the very bottom on a dedicated new line
@@ -1276,10 +1280,10 @@ function createSysMapBodyElement(body, role = 'planet', systemName = '') {
   }
 
   info.innerHTML = `
-    <div class="sysmap-body-shortname" title="${body.body_name}">${shortName}</div>
+    <div class="sysmap-body-shortname" title="${escapeHtml(body.body_name)}">${escapeHtml(shortName)}</div>
     ${aliasHtml}
-    <div class="sysmap-body-type-plate" title="${body.body_name} - ${typeDesc}">
-      <span class="sysmap-type-text">${typeDesc}</span>
+    <div class="sysmap-body-type-plate" title="${escapeHtml(body.body_name)} - ${escapeHtml(typeDesc)}">
+      <span class="sysmap-type-text">${escapeHtml(typeDesc)}</span>
     </div>
     <div class="sysmap-body-dist">${distStr}</div>
     ${badgeList.length > 0 ? `<div class="sysmap-badges-row">${badgeList.join('')}</div>` : ''}

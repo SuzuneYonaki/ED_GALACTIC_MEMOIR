@@ -7,6 +7,7 @@ an always-on core feature; disabling it only removes this one endpoint.
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
+from contextlib import closing
 from app.db.database import get_db_connection
 from app.services.spansh_service import spansh_service
 
@@ -18,17 +19,15 @@ def register(ctx):
     def sync_system_spansh(system_address: int):
         """Triggers a Spansh query for ring DSS hotspots and planetary mining
         locations, updating celestial bodies and markdown notes."""
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute("SELECT star_system FROM systems WHERE system_address = ?", (system_address,))
-        row = c.fetchone()
-        if not row or not row["star_system"]:
-            conn.close()
-            return JSONResponse({"error": "System not found"}, status_code=404)
+        with closing(get_db_connection()) as conn:
+            c = conn.cursor()
+            c.execute("SELECT star_system FROM systems WHERE system_address = ?", (system_address,))
+            row = c.fetchone()
+            if not row or not row["star_system"]:
+                return JSONResponse({"error": "System not found"}, status_code=404)
 
-        sys_name = row["star_system"]
-        result = spansh_service.sync_system_spansh(conn, system_address, sys_name)
-        conn.close()
+            sys_name = row["star_system"]
+            result = spansh_service.sync_system_spansh(conn, system_address, sys_name)
         return JSONResponse(result)
 
     # Reclaims the original /api/systems/{id}/spansh_sync path (no /api/addons/... prefix)

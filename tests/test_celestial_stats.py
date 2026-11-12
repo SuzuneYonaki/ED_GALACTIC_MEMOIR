@@ -117,7 +117,8 @@ def test_get_celestial_statistics_counts(temp_db):
     assert planets["sudarsky_class_3"] == 1
     assert planets["sudarsky_class_4"] == 1
     assert planets["sudarsky_class_5"] == 1
-    assert planets["helium_gas_giant"] == 1
+    assert planets["helium_rich_gas_giant"] == 1
+    assert planets["helium_gas_giant"] == 0
 
     assert planets["high_metal_content"] == 1
     assert planets["metal_rich"] == 1
