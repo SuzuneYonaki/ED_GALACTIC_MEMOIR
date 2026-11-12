@@ -2,6 +2,7 @@ import os
 import re
 import json
 import glob
+import sqlite3
 from pathlib import Path
 from datetime import datetime
 
@@ -12,7 +13,6 @@ from app.parser.bioscan.adapters import system_context_from_db
 from app.analyzer.anomaly_finder import detect_anomalies
 from app.services.tts_service import tts_service
 from app.services.edsm_service import edsm_service
-from app.live.rhino.note_integrator import update_body_note_in_db
 from app.live.telemetry import telemetry_tracker
 from app.addons import addon_manager
 
@@ -245,6 +245,7 @@ class JournalParser:
         self.current_latitude = None
         self.current_longitude = None
         self._has_unlocated_mining = False
+        self._op_error_retries = {}
 
     def _check_and_trigger_high_bio_alert(
         self,
@@ -428,6 +429,8 @@ class JournalParser:
         try:
             event_data = json.loads(line.strip())
         except Exception:
+            return
+        if not isinstance(event_data, dict):
             return
 
         event = event_data.get("event")
@@ -1128,6 +1131,8 @@ class JournalParser:
         body_id = data.get("BodyID")
         body_name = data.get("BodyName")
         signals = data.get("Signals", [])
+        if not isinstance(signals, list):
+            signals = []
         event_name = data.get("event", "")
 
         if sys_addr is None:
@@ -1137,8 +1142,11 @@ class JournalParser:
         geo_count = 0
         mining_count = 0
         for s in signals:
-            stype = s.get("Type", "")
-            scount = s.get("Count", 0)
+            if not isinstance(s, dict):
+                continue
+            stype = str(s.get("Type") or "")
+            raw_count = s.get("Count", 0)
+            scount = raw_count if isinstance(raw_count, (int, float)) else 0
             if "$SAA_SignalType_Biological" in stype or "biological" in stype.lower() or "bio" in stype.lower():
                 bio_count += scount
             elif "$SAA_SignalType_Geological" in stype or "geological" in stype.lower() or "geo" in stype.lower():
@@ -1150,6 +1158,8 @@ class JournalParser:
         confirmed_genuses_list = []
         if "Genuses" in data and isinstance(data["Genuses"], list):
             for g in data["Genuses"]:
+                if not isinstance(g, dict):
+                    continue
                 g_name = g.get("Genus_Localised") or g.get("Genus") or ""
                 if g_name:
                     clean_g = re.sub(r"^\$Codex_Ent_|_Genus_Name;?$", "", g_name, flags=re.IGNORECASE).strip()
@@ -1163,9 +1173,12 @@ class JournalParser:
         if is_saa_signals and signals:
             hotspot_counts = {}
             for s in signals:
-                stype = s.get("Type") or ""
-                stype_loc = s.get("Type_Localised") or ""
-                scount = s.get("Count", 1)
+                if not isinstance(s, dict):
+                    continue
+                stype = str(s.get("Type") or "")
+                stype_loc = str(s.get("Type_Localised") or "")
+                raw_count = s.get("Count", 1)
+                scount = raw_count if isinstance(raw_count, (int, float)) else 1
                 if "$Hotspot_" in stype or "hotspot" in stype.lower():
                     min_name = stype_loc or re.sub(r"^\$Hotspot_|_Name;?$", "", stype, flags=re.IGNORECASE).rstrip(";").strip()
                     if min_name:
@@ -1181,7 +1194,8 @@ class JournalParser:
                         body_name=body_name or f"Body {body_id}",
                         star_system=self.current_star_system or "",
                         ring_name=body_name or "Ring",
-                        hotspot_counts=hotspot_counts
+                        hotspot_counts=hotspot_counts,
+                        commit=False
                     )
                 except Exception as e:
                     print(f"[Parser] Error recording ring hotspots: {e}")
@@ -1534,10 +1548,11 @@ class JournalParser:
             if body_id is not None:
                 self.cursor.execute("SELECT star_type, planet_class FROM bodies WHERE system_address = ? AND body_id = ?", (sys_addr, body_id))
                 s_row = self.cursor.fetchone()
-                if s_row and (s_row["star_type"] or not s_row["planet_class"]):
+                if s_row:
+                    if s_row["star_type"] or (body_id == 0 and not s_row["planet_class"]):
+                        is_star_target = True
+                elif body_id == 0:
                     is_star_target = True
-            elif body_id == 0:
-                is_star_target = True
 
             if is_star_target or body_id is None:
                 self.cursor.execute(
@@ -1552,7 +1567,7 @@ class JournalParser:
                 if matching_planets:
                     body_id = matching_planets[0]["body_id"]
                     body_name = matching_planets[0]["body_name"]
-                else:
+                elif is_star_target:
                     # Gas giant body not scanned yet; do not attribute to star
                     body_id = None
                     body_name = None
@@ -1598,7 +1613,7 @@ class JournalParser:
                     (sys_addr, body_id)
                 )
                 b_row = self.cursor.fetchone()
-                if b_row and not b_row["star_type"] and b_row["planet_class"]:
+                if b_row and not b_row["star_type"] and (b_row["planet_class"] or body_id != 0):
                     raw_anom = b_row["anomalies_json"]
                     anomalies = []
                     if raw_anom:
@@ -1766,7 +1781,8 @@ class JournalParser:
                         latitude=self.current_latitude,
                         longitude=self.current_longitude,
                         material_name=name_loc or name,
-                        timestamp=timestamp
+                        timestamp=timestamp,
+                        commit=False
                     )
                 except Exception as e:
                     print(f"[Mining Site Save Warning] {e}")
@@ -1821,7 +1837,8 @@ class JournalParser:
                         latitude=self.current_latitude,
                         longitude=self.current_longitude,
                         material_name=type_loc or clean_type,
-                        timestamp=timestamp
+                        timestamp=timestamp,
+                        commit=False
                     )
                 except Exception as e:
                     print(f"[Mining Site Save Warning] {e}")
@@ -1997,7 +2014,53 @@ class JournalParser:
                         break
 
                     line = raw_bytes.decode("utf-8", errors="replace")
-                    self.process_journal_line(line)
+                    retries_map = getattr(self, "_op_error_retries", None)
+                    if retries_map is None:
+                        retries_map = {}
+                        self._op_error_retries = retries_map
+                    retry_key = (filename, line_start_pos)
+                    try:
+                        # Ensure an outer transaction is open so RELEASE SAVEPOINT does not commit mid-file.
+                        if not getattr(self.conn, "in_transaction", False):
+                            self.cursor.execute("BEGIN")
+                        self.cursor.execute("SAVEPOINT parse_line_sp")
+                    except sqlite3.Error:
+                        pass
+                    try:
+                        self.process_journal_line(line)
+                        try:
+                            self.cursor.execute("RELEASE SAVEPOINT parse_line_sp")
+                        except sqlite3.Error:
+                            pass
+                        retries_map.pop(retry_key, None)
+                    except sqlite3.OperationalError as op_err:
+                        err_msg = str(op_err).lower()
+                        is_transient_lock = ("locked" in err_msg or "busy" in err_msg)
+                        retries = retries_map.get(retry_key, 0) + 1
+                        retries_map[retry_key] = retries
+                        if is_transient_lock or retries <= 3:
+                            # Roll back uncommitted lines from this pass so retrying from start_offset never double-counts.
+                            try:
+                                self.conn.rollback()
+                            except sqlite3.Error:
+                                pass
+                            self.dirty_systems.clear()
+                            raise
+                        # Deterministic non-lock OperationalError repeated >3 times on one line: quarantine this line only.
+                        try:
+                            self.cursor.execute("ROLLBACK TO SAVEPOINT parse_line_sp")
+                            self.cursor.execute("RELEASE SAVEPOINT parse_line_sp")
+                        except sqlite3.Error:
+                            pass
+                        retries_map.pop(retry_key, None)
+                        print(f"[Journal Line OperationalError Quarantined] Skipped persistent SQL error in {filename}: {op_err}")
+                    except Exception as line_err:
+                        try:
+                            self.cursor.execute("ROLLBACK TO SAVEPOINT parse_line_sp")
+                            self.cursor.execute("RELEASE SAVEPOINT parse_line_sp")
+                        except sqlite3.Error:
+                            pass
+                        print(f"[Journal Line Warning] Skipped malformed line in {filename}: {line_err}")
                     valid_bytes_processed = f.tell()
 
                 current_offset = valid_bytes_processed
@@ -2058,7 +2121,7 @@ class JournalParser:
                             data = json.loads(line_bytes.decode("utf-8", errors="replace"))
                         except Exception:
                             continue
-                        if data.get("event") != "Scan" or not data.get("StarType"):
+                        if not isinstance(data, dict) or data.get("event") != "Scan" or not data.get("StarType"):
                             continue
                         age = data.get("Age_MY")
                         sys_addr = data.get("SystemAddress")
@@ -2124,7 +2187,7 @@ class JournalParser:
                         if b'"StarType"' in line_bytes and b'"Subclass"' in line_bytes:
                             try:
                                 data = json.loads(line_bytes.decode("utf-8", errors="ignore"))
-                                if data.get("event") == "Scan" and "Subclass" in data and "SystemAddress" in data:
+                                if isinstance(data, dict) and data.get("event") == "Scan" and "Subclass" in data and "SystemAddress" in data:
                                     sys_addr = data["SystemAddress"]
                                     body_id = data.get("BodyID")
                                     subclass = data["Subclass"]
@@ -2194,6 +2257,8 @@ class JournalParser:
                                     line_str = line_bytes.decode("utf-8", errors="replace").strip()
                                     if line_str:
                                         data = json.loads(line_str)
+                                        if not isinstance(data, dict):
+                                            continue
                                         ts = data.get("timestamp") or datetime.now().isoformat()
                                         self._handle_codex_entry(data, ts)
                                         total_codex += 1

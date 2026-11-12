@@ -45,6 +45,12 @@ class TelemetryTracker:
         Safely reads the current Status.json file from the journal directory.
         Returns parsed dictionary, or empty dict if unavailable.
         """
+        import time
+        now = time.monotonic()
+        # Fast path: within 250ms burst, return memory cache without hitting disk
+        if self.last_status and (now - self.last_read_time < 0.25):
+            return self.last_status
+
         target_dir = self._resolve_journal_dir()
         if not target_dir or not target_dir.exists():
             return {}
@@ -52,12 +58,6 @@ class TelemetryTracker:
         status_file = target_dir / "Status.json"
         if not status_file.exists():
             return {}
-
-        import time
-        now = time.monotonic()
-        # Fast path: within 250ms burst, return memory cache without hitting disk
-        if self.last_status and (now - self.last_read_time < 0.25):
-            return self.last_status
 
         try:
             mtime = os.path.getmtime(status_file)
