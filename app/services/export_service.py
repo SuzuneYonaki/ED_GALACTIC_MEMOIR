@@ -8,17 +8,41 @@ SIGNATURE_SALT = "ED_JOURNAL_ANALYZER_PROOF_OF_DISCOVERY_2026"
 
 def calculate_package_signature(systems_data: List[Dict[str, Any]], cmdr_name: str) -> str:
     """
-    Computes a cryptographic SHA-256 signature for the package payload to verify discovery credit
-    and detect unauthorized tampering.
+    Computes a deterministic SHA-256 integrity checksum over the full canonical
+    package payload (`cmdr_name` and all fields of `systems_data`).
+    Note: This checksum uses a public domain salt to detect accidental corruption
+    and casual edits -- it is NOT a cryptographic authentication boundary against
+    maliciously crafted packages, so all imported text MUST remain untrusted.
     """
-    canonical_tokens = [cmdr_name.strip(), SIGNATURE_SALT]
-    for sys_entry in sorted(systems_data, key=lambda s: s.get("system_address", 0)):
-        canonical_tokens.append(str(sys_entry.get("system_address", 0)))
-        canonical_tokens.append(sys_entry.get("star_system", ""))
-        for b in sorted(sys_entry.get("bodies", []), key=lambda x: x.get("body_id") if x.get("body_id") is not None else 0):
-            canonical_tokens.append(f"{b.get('body_id')}:{b.get('body_name')}:{b.get('planet_class') or b.get('star_type')}")
-    
-    raw_str = "|".join(canonical_tokens)
+    normalized_systems = []
+    for sys_entry in sorted(
+        [s for s in (systems_data or []) if isinstance(s, dict)],
+        key=lambda s: int(s.get("system_address") or 0) if str(s.get("system_address") or "").lstrip("-").isdigit() else 0,
+    ):
+        entry_copy = dict(sys_entry)
+        if isinstance(entry_copy.get("bodies"), list):
+            entry_copy["bodies"] = sorted(
+                entry_copy["bodies"],
+                key=lambda x: int(x.get("body_id") or 0) if isinstance(x, dict) and str(x.get("body_id") or "").lstrip("-").isdigit() else 0,
+            )
+        if isinstance(entry_copy.get("bookmarks"), list):
+            entry_copy["bookmarks"] = sorted(
+                entry_copy["bookmarks"],
+                key=lambda x: int(x.get("body_id") or 0) if isinstance(x, dict) and str(x.get("body_id") or "").lstrip("-").isdigit() else 0,
+            )
+        if isinstance(entry_copy.get("surface_mining"), list):
+            entry_copy["surface_mining"] = sorted(
+                entry_copy["surface_mining"],
+                key=lambda x: (str(x.get("body_id") or ""), str(x.get("material_name") or "")) if isinstance(x, dict) else ("", ""),
+            )
+        normalized_systems.append(entry_copy)
+
+    payload = {
+        "salt": SIGNATURE_SALT,
+        "cmdr_name": (cmdr_name or "").strip(),
+        "systems": normalized_systems,
+    }
+    raw_str = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(raw_str.encode("utf-8")).hexdigest()
 
 def verify_package_signature(package_dict: Dict[str, Any]) -> Tuple[bool, str]:
@@ -191,7 +215,7 @@ def create_edsys_package(conn, system_addresses: List[int], cmdr_name: str = "Ex
     }
     return package
 
-def import_edsys_package(conn, package_dict: Dict[str, Any], overwrite: bool = False, allow_invalid_signature: bool = True) -> Dict[str, Any]:
+def import_edsys_package(conn, package_dict: Dict[str, Any], overwrite: bool = False, allow_invalid_signature: bool = False) -> Dict[str, Any]:
     """
     Safely imports systems from an .edsys package into the database under is_shared = 1.
     """
@@ -346,8 +370,8 @@ def import_edsys_package(conn, package_dict: Dict[str, Any], overwrite: bool = F
     }
 
 
-def get_body_visual_color(planet_class: str) -> str:
-    if not planet_class:
+def get_body_visual_color(planet_class: Any) -> str:
+    if not planet_class or not isinstance(planet_class, str):
         return "#60a5fa"
     p = planet_class.lower()
     if "earth" in p:
@@ -673,12 +697,12 @@ def build_interactive_orrery(system_data: Dict[str, Any], bodies: List[Dict[str,
 
         if not is_prim:
             dist_tag = f" ({dist_val:,} Ls)" if dist_val else ""
-            comp_btn_text = strings["orrery_companion_star"].format(key=star_key, dist=dist_tag)
+            comp_btn_text = html.escape(strings["orrery_companion_star"].format(key=star_key, dist=dist_tag))
             jump_buttons_html.append(f'<button type="button" class="orrery-btn" onclick="focusOrreryTarget({sx:.1f}, {sy:.1f}, 2.4)">{comp_btn_text}</button>')
 
         if is_bary:
-            bary_text = strings["barycentre_label"].format(key=star_key)
-            svg_elements.append(f'<g class="orrery-node" data-name="{html.escape(s_body.get("body_name", ""))}" data-type="Barycentre" data-dist="{dist_val}">')
+            bary_text = html.escape(strings["barycentre_label"].format(key=star_key))
+            svg_elements.append(f'<g class="orrery-node" data-name="{html.escape(str(s_body.get("body_name", "")))}" data-type="Barycentre" data-dist="{html.escape(str(dist_val))}">')
             svg_elements.append(f'<circle cx="{sx:.1f}" cy="{sy:.1f}" r="8" fill="none" stroke="#a855f7" stroke-width="1.5" stroke-dasharray="2,2" />')
             svg_elements.append(f'<line x1="{sx-12:.1f}" y1="{sy:.1f}" x2="{sx+12:.1f}" y2="{sy:.1f}" stroke="#a855f7" stroke-width="1" />')
             svg_elements.append(f'<line x1="{sx:.1f}" y1="{sy-12:.1f}" x2="{sx:.1f}" y2="{sy+12:.1f}" stroke="#a855f7" stroke-width="1" />')
@@ -687,12 +711,12 @@ def build_interactive_orrery(system_data: Dict[str, Any], bodies: List[Dict[str,
         else:
             r_star = 18 if is_prim else 13
             glow_id = "star-glow" if is_prim else "companion-glow"
-            b_name = html.escape(s_body.get("body_name", f"Star {star_key}"))
-            star_body_id = s_body.get("body_id", "")
-            temp_val = f'{s_body.get("surface_temperature", "--")} K'
-            star_type_text = strings["star_type_label"].format(type=s_type)
-            star_key_text = strings["star_key_label"].format(key=star_key, type=s_type)
-            svg_elements.append(f'<g class="orrery-node" data-body-id="{star_body_id}" data-name="{b_name}" data-type="{star_type_text}" data-dist="{dist_val}" data-temp="{temp_val}">')
+            b_name = html.escape(str(s_body.get("body_name", f"Star {star_key}")))
+            star_body_id = html.escape(str(s_body.get("body_id", "")))
+            temp_val = html.escape(f'{s_body.get("surface_temperature", "--")} K')
+            star_type_text = html.escape(strings["star_type_label"].format(type=s_type))
+            star_key_text = html.escape(strings["star_key_label"].format(key=star_key, type=s_type))
+            svg_elements.append(f'<g class="orrery-node" data-body-id="{star_body_id}" data-name="{b_name}" data-type="{star_type_text}" data-dist="{html.escape(str(dist_val))}" data-temp="{temp_val}">')
             svg_elements.append(f'<circle cx="{sx:.1f}" cy="{sy:.1f}" r="{r_star}" fill="{s_color}" filter="url(#{glow_id})" />')
             svg_elements.append(f'<text x="{sx:.1f}" y="{sy + r_star + 13:.1f}" font-size="10" font-weight="bold" fill="#fed7aa" text-anchor="middle" font-family="sans-serif">{star_key_text}</text>')
             svg_elements.append('</g>')
@@ -711,15 +735,15 @@ def build_interactive_orrery(system_data: Dict[str, Any], bodies: List[Dict[str,
 
             svg_elements.append(f'<circle cx="{sx:.1f}" cy="{sy:.1f}" r="{p_orbit_r:.1f}" fill="none" stroke="rgba(255,255,255,0.12)" stroke-dasharray="2,2" />')
 
-            p_name = html.escape(p_body.get("body_name", f"Planet {p_entry['num']}")) if p_body else f"{star_key} {p_entry['num']}"
-            p_class = p_body.get("planet_class", "Planet") if p_body else "Planet"
+            p_name = html.escape(str((p_body.get("body_name") if p_body else None) or f"Planet {p_entry['num']}")) if p_body else f"{star_key} {p_entry['num']}"
+            p_class = (p_body.get("planet_class") if p_body else None) or "Planet"
             p_color = get_body_visual_color(p_class)
             g_str = f"{p_body.get('surface_gravity_g', 0):.2f}G" if (p_body and p_body.get('surface_gravity_g')) else "--"
             p_dist = p_body.get("distance_from_arrival_ls", 0) if p_body else 0
             p_temp = f"{p_body.get('surface_temperature', '--')} K" if (p_body and p_body.get('surface_temperature')) else "--"
-            planet_body_id = p_body.get("body_id", "") if p_body else ""
+            planet_body_id = html.escape(str(p_body.get("body_id", ""))) if p_body else ""
 
-            svg_elements.append(f'<g class="orrery-node" data-body-id="{planet_body_id}" data-name="{p_name}" data-type="{html.escape(p_class)}" data-dist="{p_dist}" data-grav="{g_str}" data-temp="{p_temp}">')
+            svg_elements.append(f'<g class="orrery-node" data-body-id="{planet_body_id}" data-name="{p_name}" data-type="{html.escape(str(p_class))}" data-dist="{html.escape(str(p_dist))}" data-grav="{html.escape(str(g_str))}" data-temp="{html.escape(str(p_temp))}">')
             svg_elements.append(f'<circle cx="{px:.1f}" cy="{py:.1f}" r="6.5" fill="{p_color}" />')
             svg_elements.append(f'<text x="{px:.1f}" y="{py - 8:.1f}" font-size="8" fill="#e2e8f0" text-anchor="middle" font-family="sans-serif">{p_name} ({g_str})</text>')
             svg_elements.append('</g>')
@@ -732,14 +756,14 @@ def build_interactive_orrery(system_data: Dict[str, Any], bodies: List[Dict[str,
 
                 svg_elements.append(f'<circle cx="{px:.1f}" cy="{py:.1f}" r="{m_orbit_r:.1f}" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="0.8" stroke-dasharray="1,2" />')
 
-                m_name = html.escape(m_body.get("body_name", "Moon"))
-                m_class = m_body.get("planet_class", "Moon")
+                m_name = html.escape(str(m_body.get("body_name") or "Moon"))
+                m_class = m_body.get("planet_class") or "Moon"
                 m_color = get_body_visual_color(m_class)
                 m_dist = m_body.get("distance_from_arrival_ls", 0)
                 m_grav = f"{m_body.get('surface_gravity_g', 0):.2f}G" if m_body.get('surface_gravity_g') else "--"
-                moon_body_id = m_body.get("body_id", "") if m_body else ""
+                moon_body_id = html.escape(str(m_body.get("body_id", ""))) if m_body else ""
 
-                svg_elements.append(f'<g class="orrery-node" data-body-id="{moon_body_id}" data-name="{m_name}" data-type="{html.escape(m_class)}" data-dist="{m_dist}" data-grav="{m_grav}">')
+                svg_elements.append(f'<g class="orrery-node" data-body-id="{moon_body_id}" data-name="{m_name}" data-type="{html.escape(str(m_class))}" data-dist="{html.escape(str(m_dist))}" data-grav="{html.escape(str(m_grav))}">')
                 svg_elements.append(f'<circle cx="{mx:.1f}" cy="{my:.1f}" r="3" fill="{m_color}" />')
                 svg_elements.append('</g>')
 
@@ -817,7 +841,14 @@ def generate_standalone_html(
         "cmdr_name": "Anonymous" if is_anonymous else (cmdr_name or "Explorer"),
         "ai_prompt_hint": strings["ai_prompt_hint"]
     }
-    json_str = json.dumps(full_data, ensure_ascii=False, indent=2).replace("</script>", "<\\/script>")
+    json_str = (
+        json.dumps(full_data, ensure_ascii=False, indent=2)
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
 
     # Build interactive multi-star and orbital hierarchy Orrery
     orrery_html_block = build_interactive_orrery(system_data, bodies, lang=lang)
@@ -825,8 +856,8 @@ def generate_standalone_html(
     # Build bodies table rows with deep astrophysics parameter disclosure
     body_rows_html = []
     for b in bodies:
-        b_name = html.escape(b.get("body_name", ""))
-        b_type = html.escape(b.get("planet_class") or b.get("star_type") or "Unknown")
+        b_name = html.escape(str(b.get("body_name") or ""))
+        b_type = html.escape(str(b.get("planet_class") or b.get("star_type") or "Unknown"))
         dist = f"{round(b.get('distance_from_arrival_ls', 0)):,} Ls" if b.get('distance_from_arrival_ls') is not None else "--"
         grav = f"{b.get('surface_gravity_g', 0):.2f} G" if b.get("surface_gravity_g") is not None else "--"
         temp = f"{round(b.get('surface_temperature', 0))} K" if b.get("surface_temperature") is not None else "--"
@@ -870,9 +901,14 @@ def generate_standalone_html(
             try:
                 comp_obj = json.loads(comp_raw) if isinstance(comp_raw, str) else comp_raw
                 if isinstance(comp_obj, dict):
-                    atmo_comp_str = f"{strings['param_composition']}: " + ", ".join(f"{k} {v:.1f}%" for k, v in comp_obj.items())
+                    atmo_comp_str = f"{strings['param_composition']}: " + ", ".join(
+                        f"{html.escape(str(k))} {float(v or 0):.1f}%" for k, v in comp_obj.items()
+                    )
                 elif isinstance(comp_obj, list):
-                    atmo_comp_str = f"{strings['param_composition']}: " + ", ".join(f"{item.get('Name')}: {item.get('Percent', 0):.1f}%" for item in comp_obj if isinstance(item, dict))
+                    atmo_comp_str = f"{strings['param_composition']}: " + ", ".join(
+                        f"{html.escape(str(item.get('Name') or ''))}: {float(item.get('Percent') or 0):.1f}%"
+                        for item in comp_obj if isinstance(item, dict)
+                    )
             except Exception:
                 pass
 
@@ -1341,18 +1377,37 @@ footer {{ text-align: center; font-size: 0.75rem; color: var(--text-secondary); 
     const nodes = wrapper.querySelectorAll('.orrery-node');
     nodes.forEach(node => {{
         node.addEventListener('mouseenter', (e) => {{
-            const name = node.getAttribute('data-name');
-            const type = node.getAttribute('data-type');
+            const name = node.getAttribute('data-name') || '';
+            const type = node.getAttribute('data-type') || '';
             const dist = node.getAttribute('data-dist');
             const grav = node.getAttribute('data-grav');
             const temp = node.getAttribute('data-temp');
 
-            let content = '<b style="color: var(--ed-orange);">' + name + '</b><br><span style="color: var(--ed-cyan);">' + type + '</span>';
-            if (dist && dist !== '0') content += '<br>{strings["tooltip_dist"]}' + Number(dist).toLocaleString() + ' Ls';
-            if (grav && grav !== '--') content += '<br>{strings["tooltip_grav"]}' + grav;
-            if (temp && temp !== '--') content += '<br>{strings["tooltip_temp"]}' + temp;
+            tooltip.replaceChildren();
+            const titleEl = document.createElement('b');
+            titleEl.style.color = 'var(--ed-orange)';
+            titleEl.textContent = name;
+            tooltip.appendChild(titleEl);
+            tooltip.appendChild(document.createElement('br'));
 
-            tooltip.innerHTML = content;
+            const typeEl = document.createElement('span');
+            typeEl.style.color = 'var(--ed-cyan)';
+            typeEl.textContent = type;
+            tooltip.appendChild(typeEl);
+
+            if (dist && dist !== '0') {{
+                tooltip.appendChild(document.createElement('br'));
+                tooltip.appendChild(document.createTextNode({json.dumps(strings["tooltip_dist"], ensure_ascii=False)} + Number(dist).toLocaleString() + ' Ls'));
+            }}
+            if (grav && grav !== '--') {{
+                tooltip.appendChild(document.createElement('br'));
+                tooltip.appendChild(document.createTextNode({json.dumps(strings["tooltip_grav"], ensure_ascii=False)} + grav));
+            }}
+            if (temp && temp !== '--') {{
+                tooltip.appendChild(document.createElement('br'));
+                tooltip.appendChild(document.createTextNode({json.dumps(strings["tooltip_temp"], ensure_ascii=False)} + temp));
+            }}
+
             tooltip.style.display = 'block';
         }});
 

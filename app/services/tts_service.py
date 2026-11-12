@@ -11,7 +11,9 @@ Features priority-queued sequential playback to prevent audio overlap and allow 
 from __future__ import annotations
 
 import asyncio
+import heapq
 import logging
+import re
 import sys
 from typing import Any, Dict, Optional, Tuple
 
@@ -48,7 +50,7 @@ class TTSService:
 
         # PriorityQueue elements: (priority_rank: int, sequence_id: int, text: Optional[str])
         # priority_rank: 0 for URGENT/priority, 1 for normal
-        self._queue: asyncio.PriorityQueue[Tuple[int, int, Optional[str]]] = asyncio.PriorityQueue()
+        self._queue: asyncio.PriorityQueue[Tuple[int, int, Optional[str]]] = asyncio.PriorityQueue(maxsize=100)
         self._counter: int = 0
         self._worker_task: Optional[asyncio.Task] = None
         self._running: bool = False
@@ -66,8 +68,17 @@ class TTSService:
         if not self._running:
             return
         self._running = False
-        # Put sentinel with highest priority to exit promptly
-        await self._queue.put((0, 0, None))
+        # Put sentinel with highest priority to exit promptly without blocking on a full queue
+        while self._queue.full():
+            try:
+                self._queue.get_nowait()
+                self._queue.task_done()
+            except asyncio.QueueEmpty:
+                break
+        try:
+            self._queue.put_nowait((0, 0, None))
+        except asyncio.QueueFull:
+            pass
         if self._worker_task:
             try:
                 await asyncio.wait_for(self._worker_task, timeout=2.0)
@@ -86,14 +97,38 @@ class TTSService:
         if not self.config.get("enabled", True):
             return False
 
-        clean_text = (text or "").strip()
+        clean_text = (text or "").strip()[:1000]
         if not clean_text:
             return False
+
+        if self._queue.full():
+            if priority:
+                # Evict one normal-priority item so urgent alerts (e.g. GGG) are never dropped
+                evicted = False
+                internal_q = getattr(self._queue, "_queue", None)
+                if isinstance(internal_q, list):
+                    for idx in range(len(internal_q) - 1, -1, -1):
+                        if internal_q[idx][0] >= 1:
+                            internal_q.pop(idx)
+                            heapq.heapify(internal_q)
+                            try:
+                                self._queue.task_done()
+                            except ValueError:
+                                pass
+                            evicted = True
+                            break
+                if not evicted:
+                    return False
+            else:
+                return False
 
         self._counter += 1
         priority_rank = 0 if priority else 1
         # Put into PriorityQueue non-blocking
-        self._queue.put_nowait((priority_rank, self._counter, clean_text))
+        try:
+            self._queue.put_nowait((priority_rank, self._counter, clean_text))
+        except asyncio.QueueFull:
+            return False
         return True
 
     def test_speak(self) -> bool:
@@ -115,7 +150,9 @@ class TTSService:
 
         voicevox_url = new_config.get("voicevox_url")
         if voicevox_url is not None:
-            self.config["voicevox_url"] = str(voicevox_url).rstrip("/")
+            url_str = str(voicevox_url).strip().rstrip("/")
+            if re.match(r"^https?://(127\.0\.0\.1|localhost)(:\d+)?$", url_str, re.IGNORECASE):
+                self.config["voicevox_url"] = url_str
 
         speaker_id = new_config.get("speaker_id")
         if speaker_id is not None:

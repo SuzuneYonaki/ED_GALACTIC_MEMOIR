@@ -17,6 +17,7 @@ disabling it removes the settings/REST endpoints and stops the playback
 worker, but does not touch the GGG/exobiology detection logic itself.
 """
 import json
+import re
 from typing import Optional
 
 from fastapi import APIRouter
@@ -128,8 +129,39 @@ def register(ctx):
                 pass
         return default_settings
 
+    _ALLOWED_TTS_SETTINGS_KEYS = frozenset({
+        "enabled", "highBioEnabled", "highBioMode", "highBioThreshold",
+        "highBioThresholdType", "highBioText", "gggEnabled", "gggConfirmedEnabled",
+        "gggMode", "gggConfirmedText", "engine", "webVoiceURI",
+        "voicevoxSpeakerId", "speaker_id", "voicevoxUrl", "voicevox_url",
+        "customText", "volume", "volume_scale", "rate", "speed_scale",
+    })
+    _LOCAL_TTS_URL_RE = re.compile(r"^https?://(127\.0\.0\.1|localhost)(:\d+)?$", re.IGNORECASE)
+
     @router.post("/tts_settings")
     def save_tts_settings_endpoint(settings: dict):
+        if not isinstance(settings, dict):
+            return JSONResponse({"status": "error", "message": "Invalid settings payload"}, status_code=400)
+        unknown_keys = set(settings.keys()) - _ALLOWED_TTS_SETTINGS_KEYS
+        if unknown_keys:
+            return JSONResponse(
+                {"status": "error", "message": f"Unsupported settings key(s): {', '.join(sorted(unknown_keys))}"},
+                status_code=400,
+            )
+        for val in settings.values():
+            if isinstance(val, (dict, list)) or (isinstance(val, str) and len(val) > 2000):
+                return JSONResponse(
+                    {"status": "error", "message": "Invalid value type or length in TTS settings"},
+                    status_code=400,
+                )
+        for url_key in ("voicevoxUrl", "voicevox_url"):
+            if url_key in settings and settings[url_key] is not None:
+                candidate = str(settings[url_key]).strip().rstrip("/")
+                if candidate and not _LOCAL_TTS_URL_RE.match(candidate):
+                    return JSONResponse(
+                        {"status": "error", "message": "voicevox_url must target localhost or 127.0.0.1"},
+                        status_code=400,
+                    )
         try:
             DATA_DIR.mkdir(parents=True, exist_ok=True)
             saved_settings = {}
@@ -182,6 +214,14 @@ def register(ctx):
         dump_fn = getattr(req, "model_dump", getattr(req, "dict", None))
         raw_data = dump_fn() if dump_fn else req.__dict__
         update_data = {k: v for k, v in raw_data.items() if v is not None}
+        if "voicevox_url" in update_data:
+            candidate = str(update_data["voicevox_url"]).strip().rstrip("/")
+            if not _LOCAL_TTS_URL_RE.match(candidate):
+                return JSONResponse(
+                    {"status": "error", "message": "voicevox_url must target localhost or 127.0.0.1"},
+                    status_code=400,
+                )
+            update_data["voicevox_url"] = candidate
         tts_service.update_config(update_data)
         try:
             DATA_DIR.mkdir(parents=True, exist_ok=True)
