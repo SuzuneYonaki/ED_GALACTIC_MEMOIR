@@ -194,6 +194,32 @@ def test_incremental_sync_on_bookmark_and_mining_site(search_client):
     assert search_client.get("/api/search?q=結晶サイト").json()["total"] == 0
 
 
+def test_api_search_boolean_and_or_queries(search_client):
+    # Fulltext OR across two systems and categories
+    res_or = search_client.get("/api/search", params={"q": "Polonium OR ファンゴイダ"})
+    assert res_or.status_code == 200
+    data_or = res_or.json()
+    assert data_or["total"] == 2
+    assert {r["star_system"] for r in data_or["results"]} == {"Alpha Frontier", "Beta Oasis"}
+
+    # Parentheses + exclusion on /api/search
+    res_grp = search_client.get("/api/search", params={"q": "(Polonium OR ファンゴイダ) -Oasis"})
+    assert res_grp.status_code == 200
+    data_grp = res_grp.json()
+    assert data_grp["total"] == 1
+    assert data_grp["results"][0]["star_system"] == "Alpha Frontier"
+
+    # /api/systems?q= with OR union across systems
+    res_sys_or = search_client.get("/api/systems", params={"q": "Polonium OR ファンゴイダ"})
+    assert res_sys_or.status_code == 200
+    assert {s["star_system"] for s in res_sys_or.json()["systems"]} == {"Alpha Frontier", "Beta Oasis"}
+
+    # /api/systems?q= with grouped exclusion: (Horizon OR Beta) AND -(Polonium)
+    res_sys_excl = search_client.get("/api/systems", params={"q": "(Horizon OR Beta) AND -(Polonium)"})
+    assert res_sys_excl.status_code == 200
+    assert [s["star_system"] for s in res_sys_excl.json()["systems"]] == ["Beta Oasis"]
+
+
 def test_search_empty_and_malformed_queries(search_client):
     res_empty = search_client.get("/api/search?q=")
     assert res_empty.status_code == 200
@@ -201,3 +227,7 @@ def test_search_empty_and_malformed_queries(search_client):
 
     res_sqli = search_client.get("/api/search?q=' OR 1=1; DROP TABLE search_documents; --")
     assert res_sqli.status_code == 200
+
+    for edge_q in ["OR", "AND", "(((Polonium", "Polonium)))", "-Gas"]:
+        res_edge = search_client.get("/api/search", params={"q": edge_q})
+        assert res_edge.status_code == 200

@@ -1,4 +1,7 @@
+import json
 import re
+import shutil
+import subprocess
 import unittest
 from pathlib import Path
 from fastapi.testclient import TestClient
@@ -84,6 +87,63 @@ class TestUIGlobalSearch(unittest.TestCase):
         res_home = client.get("/")
         self.assertEqual(res_home.status_code, 200)
         self.assertIn("modal-global-search", res_home.text)
+
+    def test_global_search_js_syntax_and_dom_xss_execution(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node binary not available")
+
+        for rel in ("app/ui/js/global_search.js", "app/ui/js/i18n.js"):
+            proc = subprocess.run([node, "--check", str(self.root / rel)], capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+
+        js_src = (self.root / "app" / "ui" / "js" / "global_search.js").read_text(encoding="utf-8")
+        # Extract appendSafeHighlightedNodes and execute in Node with a mock DOM recording all nodes
+        harness = rf"""
+const created = [];
+const document = {{
+  addEventListener: () => {{}},
+  getElementById: () => null,
+  createTextNode: (t) => {{
+    const n = {{ nodeType: 3, text: String(t) }};
+    created.push(n);
+    return n;
+  }},
+  createElement: (tag) => {{
+    const el = {{
+      nodeType: 1,
+      tagName: String(tag).toUpperCase(),
+      className: '',
+      _text: '',
+      children: [],
+      appendChild(c) {{ this.children.push(c); return c; }},
+      set textContent(v) {{ this._text = String(v); }},
+      get textContent() {{ return this._text; }}
+    }};
+    created.push(el);
+    return el;
+  }}
+}};
+const window = {{}};
+const src = {json.dumps(js_src)};
+const match = src.match(/function appendSafeHighlightedNodes\([\s\S]*?\n  \}}/);
+if (!match) throw new Error('appendSafeHighlightedNodes not found');
+const fn = new Function('document', match[0] + '; return appendSafeHighlightedNodes;')(document);
+const parent = document.createElement('div');
+const payload = '&lt;script&gt;<mark class="search-hl">alert</mark>(&quot;xss&quot;)&lt;/script&gt;&lt;img src=x onerror=alert(1)&gt;';
+fn(parent, payload, '');
+const tags = parent.children.filter(c => c.nodeType === 1).map(c => c.tagName);
+const texts = parent.children.map(c => c.nodeType === 3 ? c.text : `[MARK:${{c.textContent}}]`);
+console.log(JSON.stringify({{ tags, texts }}));
+"""
+        proc = subprocess.run([node, "-e", harness], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        data = json.loads(proc.stdout.strip())
+        # Only MARK elements should ever be created inside parent; all script/img tags stay inert text nodes
+        self.assertEqual(data["tags"], ["MARK"])
+        self.assertIn("[MARK:alert]", data["texts"])
+        self.assertTrue(any("<script>" in t for t in data["texts"]))
+        self.assertTrue(any("<img src=x onerror=alert(1)>" in t for t in data["texts"]))
 
 
 if __name__ == "__main__":

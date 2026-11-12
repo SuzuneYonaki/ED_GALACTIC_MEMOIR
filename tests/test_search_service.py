@@ -320,9 +320,96 @@ class TestSearchService(unittest.TestCase):
             "'; DROP TABLE search_documents; --",
             'NEAR("a" "b", 10) * : ^',
             "a" * 2000,
+            "OR",
+            "AND",
+            "OR Polonium OR",
+            "(((Polonium",
+            "Polonium))) OR (((Tellurium",
+            "(" * 30 + "Polonium" + ")" * 30,
         ]:
             res = search_fulltext(self.conn, evil)
             self.assertIsInstance(res["results"], list)
+
+    def test_boolean_and_or_grouping_and_short_terms(self):
+        # Add System 3003 for multi-system OR / precedence checks
+        cur = self.conn.cursor()
+        cur.execute(
+            "INSERT INTO systems (system_address, star_system, main_star_type, last_visited) VALUES (?, ?, ?, ?)",
+            (3003, "Gamma Vega", "A", "2026-11-03T10:00:00Z"),
+        )
+        cur.execute(
+            """
+            INSERT INTO bodies (system_address, body_id, body_name, star_system, planet_class, materials)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                3003,
+                1,
+                "Gamma Vega 1",
+                "Gamma Vega",
+                "Rocky body",
+                json.dumps([{"Name": "Selenium", "Percent": 4.2}]),
+            ),
+        )
+        self.conn.commit()
+        rebuild_search_index(self.conn)
+
+        # Operator tokens are excluded from highlightable positive_terms, while quoted "OR"/"AND" stay literal
+        pos_op, neg_op = parse_search_query("Polonium OR Tellurium -Gas")
+        self.assertEqual(pos_op, ["Polonium", "Tellurium"])
+        self.assertEqual(neg_op, ["Gas"])
+        pos_lit, _ = parse_search_query('"OR" AND "AND"')
+        self.assertEqual(pos_lit, ["OR", "AND"])
+
+        # Explicit OR (case-insensitive) across distinct categories
+        res_or = search_fulltext(self.conn, "Tectonicas or Selenium")
+        cats_or = {r["category"] for r in res_or["results"]}
+        self.assertEqual(res_or["total"], 2)
+        self.assertEqual(cats_or, {"bio", "body"})
+        # Second OR branch should still highlight its matched term in result
+        snippets = " ".join(r["highlighted_snippet"] + " " + r["highlighted_title"] for r in res_or["results"])
+        self.assertIn('<mark class="search-hl">Tectonicas</mark>', snippets)
+        self.assertIn('<mark class="search-hl">Selenium</mark>', snippets)
+
+        # Mixed short (<3 char LIKE) + long (>=3 char FTS5) inside OR
+        res_short_or = search_fulltext(self.conn, "鉄 OR Selenium")
+        sys_addrs = {r["system_address"] for r in res_short_or["results"]}
+        self.assertEqual(sys_addrs, {1001, 3003})
+
+        # Precedence: AND binds tighter than OR -> (Gludgaa AND Tectonicas) OR (Sol AND Earth)
+        res_prec = search_fulltext(self.conn, "Gludgaa AND Tectonicas OR Home Earth")
+        self.assertEqual({r["system_address"] for r in res_prec["results"]}, {1001, 2002})
+
+        # Parentheses grouping + exclusion
+        res_group = search_fulltext(self.conn, "Gludgaa (Tectonicas OR Jameson) -Outpost")
+        self.assertEqual(res_group["total"], 1)
+        self.assertEqual(res_group["results"][0]["category"], "bio")
+
+        # Negated parenthesized group: exclude docs mentioning Polonium OR Jameson within Gludgaa
+        res_neg_group = search_fulltext(self.conn, "Gludgaa -(Polonium OR Jameson)", limit=200)
+        cats_left = set(res_neg_group["category_counts"].keys())
+        self.assertNotIn("mining", cats_left)
+        self.assertNotIn("station", cats_left)
+        self.assertIn("bio", cats_left)
+
+        # System-level compound UNION / INTERSECT / EXCEPT across documents of same system
+        self.assertEqual(
+            search_matching_system_addresses(self.conn, "Polonium OR Selenium"),
+            {1001, 3003},
+        )
+        self.assertEqual(
+            search_matching_system_addresses(self.conn, "(Jameson OR Earth) AND 採掘拠点"),
+            {1001},
+        )
+        self.assertEqual(
+            search_matching_system_addresses(self.conn, "(Polonium OR Selenium) -(Crater OR クレーター)"),
+            {3003},
+        )
+
+        # Standalone pure negative branch should safely return no results rather than full DB dump
+        res_pure_neg = search_fulltext(self.conn, "-(Polonium OR Selenium)")
+        self.assertEqual(res_pure_neg["total"], 0)
+        self.assertIsNone(search_matching_system_addresses(self.conn, "-Polonium"))
 
 
 if __name__ == "__main__":
