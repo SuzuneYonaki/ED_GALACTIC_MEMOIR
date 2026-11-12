@@ -895,3 +895,67 @@
       </div>
     </div>
   </div>
+
+
+  <!-- Galactic Region Map & Sector Progress Modal -->
+  <div id="modal-region-map" class="modal-overlay" style="display: none;">
+    <div class="modal-content region-map-modal-content">
+      <div class="modal-header" style="padding: 10px 16px; background: rgba(56, 189, 248, 0.08); border-bottom: 1px solid rgba(56, 189, 248, 0.25); display: flex; align-items: center; justify-content: space-between; gap: 10px;">
+        <div style="display: flex; align-items: center; gap: 12px; min-width: 0; flex-wrap: wrap;">
+          <h3 style="margin: 0; font-size: 0.95rem; color: #38bdf8; display: flex; align-items: center; gap: 7px;" data-i18n="region_map_modal_title">
+            🗺️ 銀河リージョンマップ & セクター探索状況
+          </h3>
+          <span id="region-map-global-summary" style="font-size: 0.74rem; color: var(--text-secondary);"></span>
+        </div>
+        <button type="button" id="btn-close-region-map" class="modal-close-btn">&times;</button>
+      </div>
+
+      <div class="region-map-layout">
+        <!-- Left: Interactive Galaxy Region Canvas -->
+        <div class="region-map-left-col">
+          <div id="region-map-selected-banner" class="region-map-selected-banner" data-i18n="region_map_click_prompt">
+            地図上のリージョンをクリックすると、リージョン名と探索済みセクターが表示されます
+          </div>
+          <div class="region-map-canvas-wrap">
+            <canvas id="region-map-canvas" width="512" height="512"></canvas>
+            <div id="region-map-hover-tooltip" class="region-map-tooltip" style="display: none;"></div>
+          </div>
+          <div class="region-map-controls-row">
+            <label style="display: inline-flex; align-items: center; gap: 5px; cursor: pointer;">
+              <input type="checkbox" id="cb-region-map-dots" checked style="accent-color: #38bdf8; cursor: pointer;">
+              <span data-i18n="region_map_show_dots">訪問星系ドットを表示</span>
+            </label>
+            <label style="display: inline-flex; align-items: center; gap: 5px; cursor: pointer;">
+              <input type="checkbox" id="cb-region-map-landmarks" checked style="accent-color: #f97316; cursor: pointer;">
+              <span data-i18n="region_map_show_landmarks">目印・現在位置を表示</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Right: Region Dropdown + Explored Sectors Progress -->
+        <div class="region-map-right-col">
+          <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+            <select id="region-map-select" class="sort-select" style="flex: 1; min-width: 180px; font-size: 0.8rem; padding: 5px 8px;"></select>
+          </div>
+
+          <div id="region-detail-summary" class="region-detail-summary"></div>
+
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <input type="text" id="region-sector-search" class="search-input" style="flex: 1; font-size: 0.78rem; padding: 5px 10px;" data-i18n-placeholder="region_sector_search_ph" placeholder="セクター名で絞り込み...">
+            <select id="region-sector-sort" class="sort-select" style="font-size: 0.76rem; padding: 4px 6px;">
+              <option value="visited" data-i18n="region_sort_visited">訪問星系数順</option>
+              <option value="scanned" data-i18n="region_sort_scanned">スキャン天体数順</option>
+              <option value="recent" data-i18n="region_sort_recent">最終訪問順</option>
+              <option value="name" data-i18n="region_sort_name">セクター名順</option>
+            </select>
+          </div>
+
+          <div id="region-sectors-list" class="region-sectors-list"></div>
+        </div>
+      </div>
+
+      <div class="modal-footer" style="padding: 8px 16px; border-top: 1px solid var(--border-color); display: flex; justify-content: flex-end; background: rgba(0,0,0,0.2);">
+        <button type="button" id="btn-dismiss-region-map" class="btn-page" style="padding: 5px 16px;" data-i18n="btn_close">閉じる</button>
+      </div>
+    </div>
+  </div>
