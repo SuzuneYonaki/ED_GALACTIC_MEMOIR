@@ -335,6 +335,23 @@ function renderSystemList() {
     }
     const ageHtml = ageFormatted ? `<span class="system-card-age" title="${escapeHtml(ageTip)}">${escapeHtml(ageFormatted)}</span>` : '';
 
+    let nebulaHtml = '';
+    if (!state.liveSyncEnabled && sys.nebula && sys.nebula.inside) {
+      const neb = sys.nebula;
+      const isEn = (typeof getAppLang === 'function' && getAppLang() === 'en');
+      const nebType = isEn ? (neb.type_label_en || neb.type || '') : (neb.type_label_ja || neb.type_label_en || neb.type || '');
+      const nebTitleParts = [`${neb.name}${nebType ? ' [' + nebType + ']' : ''}`];
+      if (neb.distance_ly !== null && neb.distance_ly !== undefined) {
+        nebTitleParts.push(
+          t('nebula_badge_tip_dist', { dist: Number(neb.distance_ly).toFixed(1) }, `星雲中心距離: ${Number(neb.distance_ly).toFixed(1)} ly`)
+        );
+      }
+      if (neb.system && neb.system !== neb.name) {
+        nebTitleParts.push(`Ref: ${neb.system}`);
+      }
+      nebulaHtml = `<div class="system-card-nebula" title="${escapeHtml(nebTitleParts.join(' | '))}">🌫️ ${escapeHtml(neb.name)}${nebType ? ` <span class="nebula-type-tag">${escapeHtml(nebType)}</span>` : ''}</div>`;
+    }
+
     const mainMass = (typeof formatSolarMass === 'function') ? formatSolarMass(sys.main_star_mass) : null;
     const totMass = (typeof formatSolarMass === 'function') ? formatSolarMass(sys.total_system_mass) : null;
     let massHtml = '';
@@ -374,6 +391,7 @@ function renderSystemList() {
         ${massHtml}
         ${ageHtml}
       </div>
+      ${nebulaHtml}
       ${voxelHtml}
       <div class="system-card-tags">
         ${tags.join('')}
@@ -524,6 +542,30 @@ function renderSystemHeader() {
     ? `[ ${sys.star_pos_x.toFixed(6)}, ${sys.star_pos_y.toFixed(6)}, ${sys.star_pos_z.toFixed(6)} ]`
     : '';
   document.getElementById('current-system-coords').innerText = coords;
+
+  const nebulaBadgeEl = document.getElementById('current-system-nebula-badge');
+  if (nebulaBadgeEl) {
+    const detailSys = (state.currentSystemData && state.currentSystemData.system) || {};
+    const neb = sys.nebula || detailSys.nebula;
+    if (!state.liveSyncEnabled && neb && neb.inside) {
+      const isEn = (typeof getAppLang === 'function' && getAppLang() === 'en');
+      const nebType = isEn ? (neb.type_label_en || neb.type || '') : (neb.type_label_ja || neb.type_label_en || neb.type || '');
+      const tipParts = [`${neb.name}${nebType ? ' (' + nebType + ')' : ''}`];
+      if (neb.distance_ly !== null && neb.distance_ly !== undefined) {
+        tipParts.push(
+          t('nebula_badge_tip_dist', { dist: Number(neb.distance_ly).toFixed(1) }, `星雲中心距離: ${Number(neb.distance_ly).toFixed(1)} ly`)
+        );
+      }
+      nebulaBadgeEl.style.display = 'inline-flex';
+      nebulaBadgeEl.textContent = nebType ? `🌫️ ${neb.name} (${nebType})` : `🌫️ ${neb.name}`;
+      nebulaBadgeEl.title = tipParts.join(' | ');
+    } else {
+      nebulaBadgeEl.style.display = 'none';
+      nebulaBadgeEl.textContent = '';
+      nebulaBadgeEl.title = '';
+    }
+  }
+
   document.getElementById('current-system-fss-value').innerText = formatCredits(sys.total_fss_value || 0);
   document.getElementById('current-system-value').innerText = formatCredits(sys.total_potential_value || 0);
   

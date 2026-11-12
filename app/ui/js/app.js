@@ -4144,6 +4144,14 @@ function updateLiveSyncButtonUI() {
       }
     }
   }
+
+  // Regular-card badges (e.g. Nebula membership) are intentionally hidden in Live mode
+  if (typeof renderSystemList === 'function' && state.systems && state.systems.length > 0) {
+    renderSystemList();
+  }
+  if (typeof renderSystemHeader === 'function') {
+    renderSystemHeader();
+  }
 }
 
 function updateSortControlsUI() {
