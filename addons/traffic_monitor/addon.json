@@ -1,0 +1,9 @@
+{
+  "id": "traffic_monitor",
+  "name": "トラフィック監視 (EDSM/EDDN)",
+  "version": "1.0.0",
+  "description": "EDSM Traffic API（EDDN集計）から対象星系の通行艦船数（累計・週間・日間）と船種別内訳を手動取得し、ローカルDBにキャッシュ表示します。",
+  "entry": "addon.py",
+  "enabled_by_default": false,
+  "requires_network": true
+}

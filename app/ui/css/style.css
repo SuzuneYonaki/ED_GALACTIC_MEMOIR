@@ -4374,6 +4374,7 @@ body.live-compact-active #current-system-coords,
 body.live-compact-active #current-system-edsm-badge,
 body.live-compact-active #btn-sync-edsm,
 body.live-compact-active #btn-sync-spansh,
+body.live-compact-active #btn-sync-traffic,
 body.live-compact-active #current-system-state-badge,
 body.live-compact-active #current-system-economy-info,
 body.live-compact-active #current-system-external-badge,
@@ -4396,4 +4397,18 @@ body.live-compact-active .system-card-voxel-age,
 body.live-compact-active .system-distance-bar,
 body.live-compact-active .system-landable-bar {
   display: none !important;
+}
+
+/* Traffic Monitor Addon Badge */
+.system-traffic-badge {
+  background: rgba(52, 211, 153, 0.12);
+  border: 1px solid rgba(52, 211, 153, 0.38);
+  color: #6ee7b7;
+  border-radius: 4px;
+  padding: 2px 7px;
+  font-size: 0.72rem;
+  font-family: var(--font-mono);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }

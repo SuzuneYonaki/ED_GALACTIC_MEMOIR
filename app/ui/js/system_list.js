@@ -649,6 +649,15 @@ function renderSystemHeader() {
     };
   }
 
+  // Traffic Monitor Sync Button & Badge
+  const btnSyncTraffic = document.getElementById('btn-sync-traffic');
+  if (btnSyncTraffic) {
+    btnSyncTraffic.style.display = 'inline-flex';
+  }
+  if (typeof window.refreshTrafficMonitorBadge === 'function') {
+    window.refreshTrafficMonitorBadge();
+  }
+
   // Spansh Sync Button
   const btnSyncSpansh = document.getElementById('btn-sync-spansh');
   if (btnSyncSpansh) {
