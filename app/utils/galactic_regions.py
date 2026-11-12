@@ -9,6 +9,7 @@ grid over the X/Z plane, so a lookup depends only on x and z.
 """
 
 import json
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -133,3 +134,76 @@ def get_region_info(region_id: Optional[int]) -> Tuple[int, str, str]:
         info = GALACTIC_REGIONS[region_id]
         return (region_id, info[0], info[1])
     return DEFAULT_FALLBACK_REGION
+
+
+def coords_to_grid_cell(
+    x: Optional[float], z: Optional[float], downsample: int = 8
+) -> Optional[Tuple[int, int]]:
+    """Maps system X/Z coordinates (ly) to downsampled grid cell (gx, gz)."""
+    if x is None or z is None:
+        return None
+    try:
+        fx = float(x)
+        fz = float(z)
+    except (ValueError, TypeError):
+        return None
+    px = int((fx - _X0) * _CELLS_PER_4096_LY / 4096)
+    pz = int((fz - _Z0) * _CELLS_PER_4096_LY / 4096)
+    row_count = len(_REGION_ROWS)
+    if px < 0 or pz < 0 or pz >= row_count or px >= row_count:
+        return None
+    gx = min((row_count // downsample) - 1, max(0, px // downsample))
+    gz = min((row_count // downsample) - 1, max(0, pz // downsample))
+    return (gx, gz)
+
+
+@lru_cache(maxsize=2)
+def get_region_map_grid(downsample: int = 8) -> Dict[str, Any]:
+    """
+    Builds and caches a lightweight downsampled RLE representation of the 42 Galactic Regions
+    for fast canvas rendering on the frontend without transmitting the full 2048x2048 raw dataset.
+    """
+    step = max(1, int(downsample))
+    src_size = len(_REGION_ROWS)
+    grid_size = src_size // step
+    half = step // 2
+
+    rle_rows: List[List[List[int]]] = []
+    for gz in range(grid_size):
+        pz = min(src_size - 1, gz * step + half)
+        # Expand the single sampled RLE row into 2048 entries in O(row_len)
+        expanded: List[int] = []
+        for run_len, rid in _REGION_ROWS[pz]:
+            expanded.extend([rid] * run_len)
+
+        row_rle: List[List[int]] = []
+        cur_rid: Optional[int] = None
+        cur_len = 0
+        for gx in range(grid_size):
+            px = min(len(expanded) - 1, gx * step + half)
+            rid = expanded[px] if 0 <= px < len(expanded) else 0
+            if rid == cur_rid:
+                cur_len += 1
+            else:
+                if cur_rid is not None:
+                    row_rle.append([cur_len, cur_rid])
+                cur_rid = rid
+                cur_len = 1
+        if cur_rid is not None:
+            row_rle.append([cur_len, cur_rid])
+        rle_rows.append(row_rle)
+
+    regions_meta = {
+        str(rid): {"en": names[0], "ja": names[1]}
+        for rid, names in sorted(GALACTIC_REGIONS.items())
+    }
+    return {
+        "width": grid_size,
+        "height": grid_size,
+        "downsample": step,
+        "x0": _X0,
+        "z0": _Z0,
+        "cells_per_4096_ly": _CELLS_PER_4096_LY,
+        "regions": regions_meta,
+        "rle_rows": rle_rows,
+    }
