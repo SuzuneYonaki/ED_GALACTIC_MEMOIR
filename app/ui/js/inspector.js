@@ -4,8 +4,10 @@
  */
 
 function clearBodyInspector() {
-  document.getElementById('inspect-body-name').innerText = '--';
-  document.getElementById('inspect-planet-class').innerText = '--';
+  const nameEl = document.getElementById('inspect-body-name');
+  if (nameEl) nameEl.innerText = '--';
+  const clsEl = document.getElementById('inspect-planet-class');
+  if (clsEl) clsEl.innerText = '--';
   document.getElementById('val-fss').innerText = '0 Cr';
   document.getElementById('val-dss').innerText = '0 Cr';
   document.getElementById('val-fd-fss').innerText = '0 Cr';
@@ -555,12 +557,12 @@ function renderBodyInspector() {
   const anomTags = document.getElementById('inspect-anomaly-tags');
   if (b.isBarycentre) {
     anomSection.style.display = 'block';
-    const starList = (b.barycentreStars || []).map(s => `Star ${s}`).join(' & ');
+    const starList = (b.barycentreStars || []).map(s => `Star ${escapeHtml(s)}`).join(' & ');
     anomTags.innerHTML = `
       <div style="background: rgba(147, 51, 234, 0.15); border: 1px solid rgba(147, 51, 234, 0.5); padding: 8px; border-radius: 6px; color: #e9d5ff; font-size: 0.8rem; line-height: 1.4;">
         <div style="font-weight: bold; color: #c084fc; margin-bottom: 4px;">♊ ${t('barycentre_title')}</div>
         <div>${t('barycentre_stars')}: <strong>${starList}</strong></div>
-        <div style="margin-top: 4px; color: var(--text-secondary);">${t('barycentre_desc')} (${b.starGroup} 1, ${b.starGroup} 2...)</div>
+        <div style="margin-top: 4px; color: var(--text-secondary);">${t('barycentre_desc')} (${escapeHtml(b.starGroup)} 1, ${escapeHtml(b.starGroup)} 2...)</div>
       </div>
     `;
   } else if (b.anomalies && b.anomalies.some(a => !(a.type === 'ggg_candidate' || (a.tag && a.tag.includes('GGG Candidate'))))) {
@@ -625,7 +627,7 @@ function renderBodyInspector() {
         return `
           <div class="bio-pred-card" style="border-color: rgba(0, 255, 136, 0.4); background: rgba(0, 255, 136, 0.06);">
             <div class="bio-pred-header">
-              <span class="bio-species-name" style="color: var(--ed-green);">✓ [${t('bio_status_confirmed')}] ${spName} ${genName && genName !== spName ? `(${genName})` : ''}</span>
+              <span class="bio-species-name" style="color: var(--ed-green);">✓ [${t('bio_status_confirmed')}] ${escapeHtml(spName)} ${genName && genName !== spName ? `(${escapeHtml(genName)})` : ''}</span>
               <span class="bio-sample-dist">${t('bio_dist_req')} ${dist}m</span>
             </div>
             <div class="bio-payout-row">
@@ -654,11 +656,11 @@ function renderBodyInspector() {
 
         let colorBadges = '';
         if (bio.variant_color) {
-          colorBadges += `<span class="tag-badge" style="background: rgba(250, 204, 21, 0.15); color: #fde047; border: 1px solid rgba(250, 204, 21, 0.35); font-size: 0.65rem;" title="${t('bio_color_main_tip')}">🎨 ${bio.variant_color}</span>`;
+          colorBadges += `<span class="tag-badge" style="background: rgba(250, 204, 21, 0.15); color: #fde047; border: 1px solid rgba(250, 204, 21, 0.35); font-size: 0.65rem;" title="${t('bio_color_main_tip')}">🎨 ${escapeHtml(bio.variant_color)}</span>`;
         }
         if (bio.alternate_variants && bio.alternate_variants.length > 0) {
           colorBadges += bio.alternate_variants.slice(0, 3).map(c => `
-            <span class="tag-badge" style="background: rgba(148, 163, 184, 0.12); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.3); font-size: 0.62rem;" title="${t('bio_color_candidate_tip')}">🎨 ${c}</span>
+            <span class="tag-badge" style="background: rgba(148, 163, 184, 0.12); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.3); font-size: 0.62rem;" title="${t('bio_color_candidate_tip')}">🎨 ${escapeHtml(c)}</span>
           `).join('');
         }
         const isExcluded = scannedGenusSet.has(gen) || isFullyScanned;
@@ -672,7 +674,7 @@ function renderBodyInspector() {
         const speciesRange = (bio.species_in_genus > 1 && bio.candidate_species)
           ? `<div style="font-size: 0.72rem; color: var(--text-secondary); margin-bottom: 4px;" title="${t('bio_species_range_tip')}">🧬 ${t('bio_species_range', {
               n: bio.species_in_genus,
-              names: bio.candidate_species.join(' / '),
+              names: escapeHtml(bio.candidate_species.join(' / ')),
               min: formatCredits(bio.min_value),
               max: formatCredits(bio.max_value)
             })}</div>`
@@ -685,7 +687,7 @@ function renderBodyInspector() {
           html += `
             <div class="bio-pred-card" style="opacity: 0.45; filter: grayscale(40%);">
               <div class="bio-pred-header">
-                <span class="bio-species-name" style="color: #94a3b8; text-decoration: line-through;">✕ [${t('bio_status_excluded') || '除外'}] ${spName}</span>
+                <span class="bio-species-name" style="color: #94a3b8; text-decoration: line-through;">✕ [${t('bio_status_excluded') || '除外'}] ${escapeHtml(spName)}</span>
                 ${pctBadge}
                 <span class="bio-sample-dist">📍 ${bio.colony_distance_m || 500}m</span>
               </div>
@@ -698,13 +700,13 @@ function renderBodyInspector() {
           html += `
             <div class="bio-pred-card" style="${isDefinite ? 'border-color: rgba(0, 255, 136, 0.25);' : ''}">
               <div class="bio-pred-header">
-                <span class="bio-species-name" style="${isDefinite ? 'color: var(--ed-green); font-weight: bold;' : ''}">${icon} [${statusLabel}] ${spName} ${bio.genus && !spName.includes(bio.genus) ? `(${bio.genus})` : ''}</span>
+                <span class="bio-species-name" style="${isDefinite ? 'color: var(--ed-green); font-weight: bold;' : ''}">${icon} [${statusLabel}] ${escapeHtml(spName)} ${bio.genus && !spName.includes(bio.genus) ? `(${escapeHtml(bio.genus)})` : ''}</span>
                 ${pctBadge}
                 ${coherentBadge}
                 ${colorBadges}
                 <span class="bio-sample-dist">📍 ${bio.colony_distance_m || 500}m</span>
               </div>
-              ${bio.description ? `<div style="font-size: 0.72rem; color: var(--text-secondary); margin-bottom: 4px;">${bio.description}</div>` : ''}
+              ${bio.description ? `<div style="font-size: 0.72rem; color: var(--text-secondary); margin-bottom: 4px;">${escapeHtml(bio.description)}</div>` : ''}
               ${speciesRange}
               <div class="bio-payout-row">
                 <span>${t('bio_base_payout')} ${formatCredits(bio.base_value)}</span>
@@ -1502,7 +1504,7 @@ function renderBodyInspector() {
         <span style="color: var(--text-secondary); display: flex; align-items: center; gap: 4px;">
           <span>${reserveInfo.icon}</span> <span>${t('reserve_level_badge_label') || '資源埋蔵量 (Reserve Level):'}</span>
         </span>
-        <span style="color: ${reserveInfo.color}; font-weight: bold;">${reserveInfo.label || reserveInfo.name}</span>
+        <span style="color: ${reserveInfo.color}; font-weight: bold;">${escapeHtml(reserveInfo.label || reserveInfo.name)}</span>
       </div>
     ` : '';
 
@@ -1521,7 +1523,7 @@ function renderBodyInspector() {
       const ringLabel = lang === 'en' ? `${rInfo.nameEn} ${isBelt ? 'Belt' : 'Ring'}` : `${rInfo.nameJa} (${rInfo.nameEn} ${isBelt ? 'Belt' : 'Ring'})`;
 
       const typeBadge = `<span class="tag-badge" style="background: ${rInfo.bg}; color: ${rInfo.color}; border: 1px solid ${rInfo.border}; font-weight: bold; font-size: 0.72rem;">
-        ${rInfo.icon} ${ringLabel}
+        ${rInfo.icon} ${escapeHtml(ringLabel)}
       </span>`;
 
       let miningHint = '';
@@ -1593,7 +1595,7 @@ function renderBodyInspector() {
       return `
         <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 5px; padding: 8px 10px; margin-bottom: 6px;">
           <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px; flex-wrap: wrap;">
-            <span style="font-weight: bold; color: var(--ed-gold); font-size: 0.8rem;">${r.Name || (isBelt ? 'Asteroid Belt' : 'Ring')}</span>
+            <span style="font-weight: bold; color: var(--ed-gold); font-size: 0.8rem;">${escapeHtml(r.Name || (isBelt ? 'Asteroid Belt' : 'Ring'))}</span>
             ${typeBadge}
           </div>
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-top: 6px; font-size: 0.72rem; color: var(--text-secondary); background: rgba(0,0,0,0.25); padding: 5px 8px; border-radius: 4px;">

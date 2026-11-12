@@ -313,7 +313,7 @@
                 <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 2px;">
                   <label style="font-size: 0.72rem; color: var(--text-secondary);" data-i18n="tts_speech_text_label">読み上げテキスト:</label>
                   <span style="font-size: 0.68rem; color: var(--ed-green);" title="使用可能な変数: {body} = 天体名, {bio_count} = シグナル数, {value} = 見込額, {system} = 星系名" data-i18n-title="tts_bio_variables_tip">
-                    変数: <code>{body}</code> <code>{bio_count}</code> <code>{value}</code> <code>{system}</code>
+                    <span data-i18n="tts_var_prefix">変数:</span> <code>{body}</code> <code>{bio_count}</code> <code>{value}</code> <code>{system}</code>
                   </span>
                 </div>
                 <input type="text" id="tts-high-bio-text" class="search-input" value="{body}、生体シグナル{bio_count}件。推定額{value}クレジットです。" style="width: 100%; padding: 4px 8px; font-size: 0.75rem;">
@@ -367,7 +367,7 @@
                 <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 2px;">
                   <label style="font-size: 0.72rem; color: var(--text-secondary);" data-i18n="tts_ggg_confirmed_text_label">確定GGG読み上げテキスト:</label>
                   <span style="font-size: 0.68rem; color: var(--ed-green);" title="使用可能な変数: {body} = 天体名, {variant} = 種別, {system} = 星系名" data-i18n-title="tts_ggg_variables_tip">
-                    変数: <code>{body}</code> <code>{variant}</code> <code>{system}</code>
+                    <span data-i18n="tts_var_prefix">変数:</span> <code>{body}</code> <code>{variant}</code> <code>{system}</code>
                   </span>
                 </div>
                 <input type="text" id="tts-ggg-confirmed-text" class="search-input" value="{body}はグリーンガスジャイアント、目視確認を推奨。種別は、{variant}です。" style="width: 100%; padding: 4px 8px; font-size: 0.75rem;">
