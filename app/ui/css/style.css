@@ -3871,7 +3871,8 @@ body.addon-off-edsm_sync.addon-off-spansh_sync #external-check-row,
 body.addon-off-edsm_sync [data-requires-addon="edsm_sync"],
 body.addon-off-spansh_sync [data-requires-addon="spansh_sync"],
 body.addon-off-tts [data-requires-addon="tts"],
-body.addon-off-export_share [data-requires-addon="export_share"] {
+body.addon-off-export_share [data-requires-addon="export_share"],
+body.addon-off-traffic_monitor [data-requires-addon="traffic_monitor"] {
   display: none !important;
 }
 
