@@ -35,6 +35,7 @@ from app.services.landmark_service import load_landmarks, calculate_landmark_dis
 from app.services.footprint_service import footprint_service
 from app.parser.bioscan.adapters import build_system_context
 from app.utils.galactic_regions import get_region_from_coords
+from app.services.nebula_service import find_nebula_for_system
 from app.services.bio_log import collect_bio_entries, query_bio_log
 from app.services.version_service import version_service
 from app.live.rhino.note_integrator import update_body_note_in_db
@@ -1711,6 +1712,11 @@ def get_systems(
                 r["bookmarks"] = []
             lm_dists = calculate_landmark_distances(r.get("star_pos_x"), r.get("star_pos_y"), r.get("star_pos_z"))
             r.update(lm_dists)
+            neb = find_nebula_for_system(
+                r.get("star_system"), r.get("star_pos_x"), r.get("star_pos_y"), r.get("star_pos_z")
+            )
+            if neb:
+                r["nebula"] = neb
 
         row_voxel_keys = {r["system_address"]: voxel_key(r.get("star_system")) for r in rows}
         voxel_stats = voxel_age_stats(conn, [k for k in row_voxel_keys.values() if k])
@@ -1853,6 +1859,14 @@ def get_system_detail(system_address: int):
 
         lm_dists = calculate_landmark_distances(system_data.get("star_pos_x"), system_data.get("star_pos_y"), system_data.get("star_pos_z"))
         system_data.update(lm_dists)
+        neb = find_nebula_for_system(
+            system_data.get("star_system"),
+            system_data.get("star_pos_x"),
+            system_data.get("star_pos_y"),
+            system_data.get("star_pos_z"),
+        )
+        if neb:
+            system_data["nebula"] = neb
 
         # Queue EDSM verification with priority if not yet checked
         sys_name = system_data.get("star_system")
