@@ -71,6 +71,8 @@ let state = {
   page: 1,
   limit: 50,
   liveSyncEnabled: false,
+  liveCompactEnabled: (typeof localStorage !== 'undefined' ? localStorage.getItem('ed_live_compact_mode') === 'true' : false),
+  liveCompactAutoCollapse: (typeof localStorage !== 'undefined' ? localStorage.getItem('ed_live_compact_auto_panes') !== 'false' : true),
   lastEventVersion: 0,
   lastJournalEventVersion: 0,
   jumpState: 'idle', // 'idle' | 'hyperspace' | 'arrived_waiting_fss' | 'scanned'
@@ -148,6 +150,7 @@ function updateStaticTexts() {
   renderSystemHeader();
   renderCurrentView();
   renderBodyInspector();
+  if (typeof window.syncLiveCompactModeUI === 'function') window.syncLiveCompactModeUI();
 }
 
 let lastCachedJumpStats = null;
@@ -2347,6 +2350,17 @@ function initPaneManager() {
     }
   } catch (e) {}
 
+  if (typeof window !== 'undefined') {
+    window.setSidePanesCollapsed = (leftCollapsed, rightCollapsed) => {
+      if (typeof leftCollapsed === 'boolean') updateLeftPaneUI(leftCollapsed);
+      if (typeof rightCollapsed === 'boolean') updateRightPaneUI(rightCollapsed);
+    };
+    window.getSidePanesCollapsed = () => ({
+      left: Boolean(leftPane && leftPane.classList.contains('collapsed')),
+      right: Boolean(rightPane && rightPane.classList.contains('collapsed')),
+    });
+  }
+
   // Event Listeners for Header Toggle Buttons
   btnToggleLeft?.addEventListener('click', () => toggleLeft());
   btnToggleRight?.addEventListener('click', () => toggleRight());
@@ -4144,6 +4158,9 @@ function updateLiveSyncButtonUI() {
       }
     }
   }
+  if (typeof window.syncLiveCompactModeUI === 'function') {
+    window.syncLiveCompactModeUI();
+  }
 }
 
 function updateSortControlsUI() {
@@ -4298,6 +4315,7 @@ function handleLiveJournalEvent(eventName, eventData) {
     const jumpType = eventData.JumpType || 'Hyperspace';
     if (jumpType === 'Hyperspace') {
       state.targetJumpSystem = eventData.StarSystem || 'Unknown';
+      if (typeof window.renderLiveCompactHudStrip === 'function') window.renderLiveCompactHudStrip();
       // Hyperspace Jump中の画面は不要のため、直前の星系表示を維持
     }
   } else if (eventName === 'FSDJump' || eventName === 'Location' || eventName === 'CarrierJump') {
@@ -6719,6 +6737,7 @@ if (typeof window !== 'undefined') {
   window.handleLiveJournalEvent = handleLiveJournalEvent;
   window.updateModuleVisibilityUI = updateModuleVisibilityUI;
   window.updateTtsPolicyView = updateTtsPolicyView;
+  window.toggleLiveSync = toggleLiveSync;
   window.switchCenterPaneView = switchCenterPaneView;
   window.initCenterPaneTabShortcuts = initCenterPaneTabShortcuts;
   window.updateViewButtons = updateViewButtons;

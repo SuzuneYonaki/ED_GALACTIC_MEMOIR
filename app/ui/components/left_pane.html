@@ -20,10 +20,15 @@
               <button type="button" id="btn-clear-all-filters" class="btn-page" style="padding: 2px 7px; font-size: 0.72rem; border-color: rgba(239, 68, 68, 0.4); color: #fca5a5; display: inline-flex; align-items: center; gap: 3px; white-space: nowrap;" data-i18n-title="btn_clear_all_filters_tip" title="すべての検索条件・天体フィルター・期間・ソートを初期化">
                 🧹 <span data-i18n="btn_clear_all">全クリア</span>
               </button>
-              <button id="btn-live-toggle" class="btn-live paused" style="padding: 3px 8px; font-size: 0.72rem; font-weight: bold; border-radius: 4px; display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; white-space: nowrap;" data-i18n-title="live_sync_tip" title="リアルタイム自動更新の有効/無効を切り替え（オフにすると過去ジャーナル閲覧時に自動ジャンプや再取得が行われません）">
-                <span class="live-indicator-dot"></span>
-                <span id="live-status-text" data-i18n="live_sync_off">PAUSED</span>
-              </button>
+              <div style="display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0;">
+                <button type="button" id="btn-live-compact-left" class="btn-live-compact" data-i18n-title="tip_live_compact_btn" title="⚡ Liveモード中の簡易HUD表示（ヘッダ簡略化・左右ペイン自動格納）を切り替え">
+                  <span>⚡</span> <span data-i18n="btn_live_compact">簡易HUD</span>
+                </button>
+                <button id="btn-live-toggle" class="btn-live paused" style="padding: 3px 8px; font-size: 0.72rem; font-weight: bold; border-radius: 4px; display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; white-space: nowrap;" data-i18n-title="live_sync_tip" title="リアルタイム自動更新の有効/無効を切り替え（オフにすると過去ジャーナル閲覧時に自動ジャンプや再取得が行われません）">
+                  <span class="live-indicator-dot"></span>
+                  <span id="live-status-text" data-i18n="live_sync_off">PAUSED</span>
+                </button>
+              </div>
             </div>
           </div>
 

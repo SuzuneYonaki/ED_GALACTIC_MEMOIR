@@ -223,6 +223,23 @@
               </div>
             </div>
 
+            <!-- Live Compact Display Customization -->
+            <div style="margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border-color);">
+              <label style="font-weight: bold; color: var(--ed-orange); font-size: 0.85rem; margin-bottom: 6px; display: block;" data-i18n="settings_live_compact_label">
+                ⚡ Liveモード簡易表示 (Compact HUD)
+              </label>
+              <div style="display: flex; flex-direction: column; gap: 6px; background: rgba(0,0,0,0.25); padding: 10px; border-radius: 6px; border: 1px solid var(--border-color);">
+                <label class="star-cb-label" style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                  <input type="checkbox" id="cb-live-compact-mode" style="accent-color: var(--ed-cyan); cursor: pointer;">
+                  <span style="color: #a5f3fc; font-weight: bold;" data-i18n="live_compact_enable_label">Liveモード中に簡易表示 (Compact HUD) を使用する</span>
+                </label>
+                <label class="star-cb-label" style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                  <input type="checkbox" id="cb-live-compact-auto-panes" checked style="accent-color: #fb923c; cursor: pointer;">
+                  <span style="font-size: 0.76rem; color: var(--text-secondary);" data-i18n="live_compact_auto_panes_label">簡易HUD有効時に左右ペインを自動で折りたたむ</span>
+                </label>
+              </div>
+            </div>
+
             <!-- Landmark Distance Display Customization -->
             <div style="margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border-color);">
               <label style="font-weight: bold; color: var(--ed-orange); font-size: 0.85rem; margin-bottom: 6px; display: block;" data-i18n="settings_landmarks_label">
