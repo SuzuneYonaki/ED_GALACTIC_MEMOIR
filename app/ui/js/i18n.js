@@ -69,12 +69,12 @@ const i18n = {
     search_mode_label: "表示:",
 
     // Left Pane
-    search_placeholder: "星系名・メモ・天体・生体・鉱物を検索 (AND / -除外)...",
+    search_placeholder: "星系名・メモ・天体・生体・鉱物を検索 (AND / OR / -除外)...",
     btn_open_fulltext_search: "🔎 全文検索ウィンドウ",
     btn_open_fulltext_search_tip: "メモ・天体・生体・鉱物・施設・物理レポートを横断全文検索します",
     global_search_title: "🔎 全文検索 (Full-Text Cross-Search)",
     global_search_placeholder: "キーワードを入力 (例: 高重力 鉄 -ガス / Stratum / Horizon)...",
-    global_search_syntax_hint: "💡 ヒント: スペース区切りで AND検索、\"フレーズ\" で完全一致、-語 で除外検索できます（1文字からも検索可能）",
+    global_search_syntax_hint: "💡 ヒント: スペース / AND で全一致、OR でいずれか一致、\"フレーズ\" で完全一致、-語 で除外、( ) でグループ化できます",
     global_search_rebuild_btn: "🔄 索引再構築",
     global_search_rebuild_tip: "データベース全体から検索インデックスを再構築します",
     global_search_rebuilding: "再構築中...",
@@ -1205,12 +1205,12 @@ const i18n = {
     search_mode_label: "Mode:",
 
     // Left Pane
-    search_placeholder: "Search systems, notes, bodies, bio, minerals (AND / -excl)...",
+    search_placeholder: "Search systems, notes, bodies, bio, minerals (AND / OR / -excl)...",
     btn_open_fulltext_search: "🔎 Full-Text Search",
     btn_open_fulltext_search_tip: "Cross-search across notes, bodies, bio scans, mining sites, stations & physics reports",
     global_search_title: "🔎 Global Full-Text Search",
     global_search_placeholder: "Enter keywords (e.g. \"High metal\" Iron -Gas / Stratum / Horizon)...",
-    global_search_syntax_hint: "💡 Tip: Space for AND, \"phrase\" for exact match, -word to exclude (1+ char supported)",
+    global_search_syntax_hint: "💡 Tip: Space or AND for all, OR for either, \"phrase\" for exact match, -word to exclude, ( ) to group",
     global_search_rebuild_btn: "🔄 Rebuild Index",
     global_search_rebuild_tip: "Rebuild full-text search index from entire database",
     global_search_rebuilding: "Rebuilding...",

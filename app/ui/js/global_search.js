@@ -165,7 +165,8 @@
       header.appendChild(titleEl);
 
       const badgeEl = document.createElement('span');
-      badgeEl.className = `global-search-cat-badge cat-badge-${item.category}`;
+      const safeCat = String(item.category || '').replace(/[^a-z0-9_-]/gi, '');
+      badgeEl.className = `global-search-cat-badge cat-badge-${safeCat}`;
       badgeEl.textContent = getCategoryLabel(item.category);
       header.appendChild(badgeEl);
 
