@@ -2,6 +2,7 @@ import html
 import json
 import re
 import sqlite3
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
@@ -29,6 +30,7 @@ CATEGORY_PRIORITY: Dict[str, int] = {
 
 MAX_QUERY_LEN = 500
 MAX_QUERY_TERMS = 15
+MAX_PAREN_DEPTH = 10
 
 
 def _now_iso() -> str:
@@ -465,45 +467,293 @@ def ensure_search_index(conn: sqlite3.Connection) -> None:
         pass
 
 
-_TOKEN_RE = re.compile(r'(-?)"([^"]+)"|(\S+)')
+_LEX_RE = re.compile(r'(-?)"([^"]*)"|([()])|([^\s()"]+)')
+
+
+@dataclass(frozen=True)
+class _TermNode:
+    term: str
+    negated: bool = False
+
+
+@dataclass(frozen=True)
+class _NotNode:
+    child: Any
+
+
+@dataclass(frozen=True)
+class _AndNode:
+    children: Tuple[Any, ...]
+
+
+@dataclass(frozen=True)
+class _OrNode:
+    children: Tuple[Any, ...]
+
+
+def _tokenize_search_query(raw_query: Optional[str]) -> List[Tuple[str, str]]:
+    """
+    Tokenizes a search query into labeled tokens for boolean expression parsing.
+    Respects MAX_QUERY_LEN and MAX_QUERY_TERMS bounds against DoS.
+    Quoted strings preserve operators ("OR", "AND") and parens as literal terms.
+    """
+    if not raw_query or not isinstance(raw_query, str):
+        return []
+    q = raw_query.replace("\x00", "").strip()[:MAX_QUERY_LEN]
+    if not q:
+        return []
+
+    tokens: List[Tuple[str, str]] = []
+    term_count = 0
+
+    for match in _LEX_RE.finditer(q):
+        neg_prefix, quoted, paren, bare = match.groups()
+        if paren is not None:
+            tokens.append(("LPAREN" if paren == "(" else "RPAREN", paren))
+        elif quoted is not None:
+            term = quoted.strip()
+            if not term:
+                continue
+            if term_count >= MAX_QUERY_TERMS:
+                break
+            term_count += 1
+            tokens.append(("NEG_TERM" if neg_prefix == "-" else "POS_TERM", term))
+        elif bare is not None:
+            word = bare.strip()
+            if not word:
+                continue
+            if word == "-":
+                tokens.append(("MINUS", "-"))
+            elif word.startswith("-") and len(word) > 1:
+                if term_count >= MAX_QUERY_TERMS:
+                    break
+                term_count += 1
+                tokens.append(("NEG_TERM", word[1:]))
+            elif word.upper() == "OR":
+                tokens.append(("OR", "OR"))
+            elif word.upper() == "AND":
+                tokens.append(("AND", "AND"))
+            else:
+                if term_count >= MAX_QUERY_TERMS:
+                    break
+                term_count += 1
+                tokens.append(("POS_TERM", word))
+
+    return tokens
+
+
+class _QueryParser:
+    """Fault-tolerant recursive-descent parser for NOT/neg > AND (implicit/explicit) > OR."""
+
+    def __init__(self, tokens: List[Tuple[str, str]]) -> None:
+        self.tokens = tokens
+        self.pos = 0
+        self.depth = 0
+
+    def _peek(self) -> Optional[Tuple[str, str]]:
+        return self.tokens[self.pos] if self.pos < len(self.tokens) else None
+
+    def _advance(self) -> Optional[Tuple[str, str]]:
+        tok = self._peek()
+        if tok is not None:
+            self.pos += 1
+        return tok
+
+    def _skip_ops(self) -> None:
+        while (tok := self._peek()) is not None and tok[0] in ("AND", "OR"):
+            self._advance()
+
+    def parse(self) -> Optional[Any]:
+        parts: List[Any] = []
+        while self._peek() is not None:
+            node = self._parse_or()
+            if node is not None:
+                parts.append(node)
+            # Recover gracefully past stray RPAREN or leading/trailing ops
+            while (tok := self._peek()) is not None and tok[0] in ("RPAREN", "AND", "OR", "MINUS"):
+                self._advance()
+        if not parts:
+            return None
+        return parts[0] if len(parts) == 1 else _AndNode(tuple(parts))
+
+    def _parse_or(self) -> Optional[Any]:
+        self._skip_ops()
+        first = self._parse_and()
+        if first is None:
+            return None
+        branches = [first]
+        while (tok := self._peek()) is not None and tok[0] == "OR":
+            self._advance()
+            self._skip_ops()
+            nxt = self._parse_and()
+            if nxt is not None:
+                branches.append(nxt)
+        return branches[0] if len(branches) == 1 else _OrNode(tuple(branches))
+
+    def _parse_and(self) -> Optional[Any]:
+        first = self._parse_factor()
+        if first is None:
+            return None
+        factors = [first]
+        while (tok := self._peek()) is not None:
+            kind = tok[0]
+            if kind in ("OR", "RPAREN"):
+                break
+            if kind == "AND":
+                self._advance()
+                while (nxt_tok := self._peek()) is not None and nxt_tok[0] == "AND":
+                    self._advance()
+                nxt = self._peek()
+                if nxt is None or nxt[0] in ("OR", "RPAREN"):
+                    break
+            factor = self._parse_factor()
+            if factor is not None:
+                factors.append(factor)
+            else:
+                break
+        return factors[0] if len(factors) == 1 else _AndNode(tuple(factors))
+
+    def _parse_factor(self) -> Optional[Any]:
+        while (tok := self._peek()) is not None:
+            kind, val = tok
+            if kind == "POS_TERM":
+                self._advance()
+                return _TermNode(val, negated=False)
+            if kind == "NEG_TERM":
+                self._advance()
+                return _TermNode(val, negated=True)
+            if kind == "MINUS":
+                self._advance()
+                nxt = self._peek()
+                if nxt is not None and nxt[0] == "LPAREN":
+                    sub = self._parse_group()
+                    if sub is not None:
+                        return _NotNode(sub)
+                continue
+            if kind == "LPAREN":
+                return self._parse_group()
+            break
+        return None
+
+    def _parse_group(self) -> Optional[Any]:
+        self._advance()  # consume LPAREN
+        if self.depth >= MAX_PAREN_DEPTH:
+            inner = self._parse_or()
+        else:
+            self.depth += 1
+            try:
+                inner = self._parse_or()
+            finally:
+                self.depth -= 1
+        if (tok := self._peek()) is not None and tok[0] == "RPAREN":
+            self._advance()
+        return inner
+
+
+def _has_positive_term(node: Any) -> bool:
+    if node is None:
+        return False
+    if isinstance(node, _TermNode):
+        return not node.negated
+    if isinstance(node, _NotNode):
+        return False
+    if isinstance(node, (_AndNode, _OrNode)):
+        return any(_has_positive_term(c) for c in node.children)
+    return False
+
+
+def _normalize_ast(node: Any) -> Optional[Any]:
+    if node is None:
+        return None
+    if isinstance(node, _TermNode):
+        return node
+    if isinstance(node, _NotNode):
+        norm_child = _normalize_ast(node.child)
+        return _NotNode(norm_child) if _has_positive_term(norm_child) else None
+    if isinstance(node, _AndNode):
+        flat: List[Any] = []
+        for c in node.children:
+            nc = _normalize_ast(c)
+            if nc is None:
+                continue
+            if isinstance(nc, _AndNode):
+                flat.extend(nc.children)
+            else:
+                flat.append(nc)
+        if not flat:
+            return None
+        return flat[0] if len(flat) == 1 else _AndNode(tuple(flat))
+    if isinstance(node, _OrNode):
+        flat = []
+        for c in node.children:
+            nc = _normalize_ast(c)
+            if nc is None or not _has_positive_term(nc):
+                continue
+            if isinstance(nc, _OrNode):
+                flat.extend(nc.children)
+            else:
+                flat.append(nc)
+        if not flat:
+            return None
+        return flat[0] if len(flat) == 1 else _OrNode(tuple(flat))
+    return None
+
+
+def _collect_terms(node: Any) -> Tuple[List[str], List[str]]:
+    pos: List[str] = []
+    neg: List[str] = []
+    seen_pos: Set[str] = set()
+    seen_neg: Set[str] = set()
+
+    def _walk(n: Any, in_neg: bool) -> None:
+        if n is None:
+            return
+        if isinstance(n, _TermNode):
+            is_neg = in_neg or n.negated
+            if is_neg:
+                if n.term not in seen_neg:
+                    seen_neg.add(n.term)
+                    neg.append(n.term)
+            else:
+                if n.term not in seen_pos:
+                    seen_pos.add(n.term)
+                    pos.append(n.term)
+        elif isinstance(n, _NotNode):
+            _walk(n.child, True)
+        elif isinstance(n, (_AndNode, _OrNode)):
+            for c in n.children:
+                _walk(c, in_neg)
+
+    _walk(node, False)
+    return pos, neg
+
+
+def parse_search_expression(
+    raw_query: Optional[str],
+) -> Tuple[Optional[Any], List[str], List[str]]:
+    """
+    Parses a search query string into (ast_or_none, positive_terms, negative_terms).
+    Supports space/AND intersection, OR union, ( ) grouping, "phrase" literals, and -exclusions.
+    Returns ast=None if the query contains no positive terms.
+    """
+    tokens = _tokenize_search_query(raw_query)
+    if not tokens:
+        return None, [], []
+    raw_ast = _QueryParser(tokens).parse()
+    pos, neg = _collect_terms(raw_ast)
+    norm_ast = _normalize_ast(raw_ast)
+    if not _has_positive_term(norm_ast):
+        return None, pos, neg
+    return norm_ast, pos, neg
 
 
 def parse_search_query(raw_query: Optional[str]) -> Tuple[List[str], List[str]]:
     """
     Parses a search query string into (positive_terms, negative_terms).
-    Supports quoted phrases ("high metal") and -exclusions (-gas).
+    Supports quoted phrases ("high metal"), boolean AND/OR, ( ) grouping, and -exclusions (-gas).
     Enforces length and term count bounds against DoS.
     """
-    if not raw_query or not isinstance(raw_query, str):
-        return [], []
-    q = raw_query.strip()[:MAX_QUERY_LEN]
-    if not q:
-        return [], []
-
-    pos: List[str] = []
-    neg: List[str] = []
-
-    for match in _TOKEN_RE.finditer(q):
-        if len(pos) + len(neg) >= MAX_QUERY_TERMS:
-            break
-        neg_prefix, quoted, bare = match.groups()
-        if quoted is not None:
-            term = quoted.strip()
-            if not term:
-                continue
-            if neg_prefix == "-":
-                neg.append(term)
-            else:
-                pos.append(term)
-        elif bare is not None:
-            term = bare.strip()
-            if not term:
-                continue
-            if term.startswith("-") and len(term) > 1:
-                neg.append(term[1:])
-            else:
-                pos.append(term)
-
+    _, pos, neg = parse_search_expression(raw_query)
     return pos, neg
 
 
@@ -581,39 +831,82 @@ def build_highlighted_snippet(
     return f"{prefix}{build_highlighted_html(window, terms)}{suffix}"
 
 
+def _doc_like_expr(negated: bool = False) -> str:
+    op = "NOT LIKE" if negated else "LIKE"
+    return f"LOWER(COALESCE(sd.title, '') || ' ' || COALESCE(sd.content, '')) {op} ? ESCAPE '\\'"
+
+
+def _compile_doc_node(node: Any, use_fts: bool) -> Tuple[str, List[Any]]:
+    """
+    Compiles a search AST node into a parameterized SQL predicate over table alias `sd`.
+    Combines adjacent FTS5 trigram positive terms inside AND/OR into a single FTS5 MATCH subquery
+    and falls back to parameterized LIKE for <3 char terms and exclusions.
+    """
+    if isinstance(node, _TermNode):
+        if not node.negated and use_fts and len(node.term) >= 3:
+            return (
+                "sd.doc_id IN (SELECT rowid FROM search_documents_fts WHERE search_documents_fts MATCH ?)",
+                [_quote_fts5_term(node.term)],
+            )
+        return _doc_like_expr(negated=node.negated), [f"%{_escape_like(node.term.lower())}%"]
+
+    if isinstance(node, _NotNode):
+        c_sql, c_params = _compile_doc_node(node.child, use_fts)
+        return f"NOT ({c_sql})", c_params
+
+    if isinstance(node, _AndNode):
+        fts_pos = [c for c in node.children if isinstance(c, _TermNode) and not c.negated and use_fts and len(c.term) >= 3]
+        others = [c for c in node.children if not (isinstance(c, _TermNode) and not c.negated and use_fts and len(c.term) >= 3)]
+        clauses: List[str] = []
+        params: List[Any] = []
+        if fts_pos:
+            fts_expr = " AND ".join(_quote_fts5_term(c.term) for c in fts_pos)
+            clauses.append("sd.doc_id IN (SELECT rowid FROM search_documents_fts WHERE search_documents_fts MATCH ?)")
+            params.append(fts_expr)
+        for oc in others:
+            o_sql, o_params = _compile_doc_node(oc, use_fts)
+            clauses.append(o_sql)
+            params.extend(o_params)
+        if len(clauses) == 1:
+            return clauses[0], params
+        return f"({' AND '.join(clauses)})", params
+
+    if isinstance(node, _OrNode):
+        fts_pos = [c for c in node.children if isinstance(c, _TermNode) and not c.negated and use_fts and len(c.term) >= 3]
+        others = [c for c in node.children if not (isinstance(c, _TermNode) and not c.negated and use_fts and len(c.term) >= 3)]
+        clauses = []
+        params = []
+        if fts_pos:
+            fts_expr = " OR ".join(_quote_fts5_term(c.term) for c in fts_pos)
+            clauses.append("sd.doc_id IN (SELECT rowid FROM search_documents_fts WHERE search_documents_fts MATCH ?)")
+            params.append(fts_expr)
+        for oc in others:
+            o_sql, o_params = _compile_doc_node(oc, use_fts)
+            clauses.append(o_sql)
+            params.extend(o_params)
+        if len(clauses) == 1:
+            return clauses[0], params
+        return f"({' OR '.join(clauses)})", params
+
+    return "1=0", []
+
+
 def _build_sql_filter(
     conn: sqlite3.Connection,
-    positive_terms: List[str],
-    negative_terms: List[str],
+    ast: Any,
     categories: Optional[List[str]] = None,
 ) -> Tuple[str, List[Any]]:
     """
-    Constructs a hybrid SQL query fragment using FTS5 trigram for >=3 char terms
-    and parameterized LIKE for short (<3 char) and negative terms.
+    Constructs a hybrid SQL query fragment from a parsed query AST and optional category filter.
     Returns (sql_from_and_where, params).
     """
     use_fts = _has_fts5_table(conn)
-    trigram_terms = [t for t in positive_terms if len(t) >= 3] if use_fts else []
-    short_terms = [t for t in positive_terms if len(t) < 3] if use_fts else list(positive_terms)
-
     where_clauses: List[str] = []
     params: List[Any] = []
 
-    if trigram_terms:
-        from_clause = "FROM search_documents_fts fts JOIN search_documents sd ON fts.rowid = sd.doc_id"
-        fts_expr = " AND ".join(_quote_fts5_term(t) for t in trigram_terms)
-        where_clauses.append("search_documents_fts MATCH ?")
-        params.append(fts_expr)
-    else:
-        from_clause = "FROM search_documents sd"
-
-    for st in short_terms:
-        where_clauses.append("LOWER(sd.title || ' ' || sd.content) LIKE ? ESCAPE '\\'")
-        params.append(f"%{_escape_like(st.lower())}%")
-
-    for nt in negative_terms:
-        where_clauses.append("LOWER(sd.title || ' ' || sd.content) NOT LIKE ? ESCAPE '\\'")
-        params.append(f"%{_escape_like(nt.lower())}%")
+    ast_sql, ast_params = _compile_doc_node(ast, use_fts)
+    where_clauses.append(ast_sql)
+    params.extend(ast_params)
 
     if categories:
         valid_cats = [c for c in categories if c in SEARCH_CATEGORIES]
@@ -623,7 +916,7 @@ def _build_sql_filter(
             params.extend(valid_cats)
 
     where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
-    return f"{from_clause} WHERE {where_sql}", params
+    return f"FROM search_documents sd WHERE {where_sql}", params
 
 
 def search_fulltext(
@@ -648,8 +941,8 @@ def search_fulltext(
             "negative_terms": [],
         }
     ensure_search_index(conn)
-    pos_terms, neg_terms = parse_search_query(query)
-    if not pos_terms:
+    ast, pos_terms, neg_terms = parse_search_expression(query)
+    if ast is None or not pos_terms:
         return {
             "total": 0,
             "total_unfiltered": 0,
@@ -664,7 +957,7 @@ def search_fulltext(
     offset = max(0, int(offset))
 
     # Category facet counts (without category filter)
-    base_sql_all, base_params_all = _build_sql_filter(conn, pos_terms, neg_terms, categories=None)
+    base_sql_all, base_params_all = _build_sql_filter(conn, ast, categories=None)
     cur = conn.cursor()
     cat_rows = cur.execute(
         f"SELECT sd.category, COUNT(*) as cnt {base_sql_all} GROUP BY sd.category",
@@ -674,21 +967,21 @@ def search_fulltext(
     total_unfiltered = sum(category_counts.values())
 
     # Filtered results
-    sql_body, params = _build_sql_filter(conn, pos_terms, neg_terms, categories=categories)
+    sql_body, params = _build_sql_filter(conn, ast, categories=categories)
     if categories:
         total = cur.execute(f"SELECT COUNT(*) {sql_body}", params).fetchone()[0]
     else:
         total = total_unfiltered
 
-    # Rank title matches higher, then category priority, then updated_at desc
-    first_term = pos_terms[0].lower()
-    like_first = f"%{_escape_like(first_term)}%"
+    # Rank matches against ANY positive term in title higher, then category priority, then updated_at desc
+    title_like_sql = " OR ".join("LOWER(COALESCE(sd.title, '')) LIKE ? ESCAPE '\\'" for _ in pos_terms)
+    title_like_params = [f"%{_escape_like(t.lower())}%" for t in pos_terms]
 
     rows = cur.execute(
         f"""
         SELECT sd.doc_id, sd.doc_key, sd.category, sd.system_address, sd.star_system,
                sd.body_id, sd.body_name, sd.title, sd.content, sd.updated_at,
-               CASE WHEN LOWER(sd.title) LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END as title_rank,
+               CASE WHEN ({title_like_sql}) THEN 0 ELSE 1 END as title_rank,
                CASE sd.category
                    WHEN 'bookmark' THEN 1
                    WHEN 'system' THEN 2
@@ -704,7 +997,7 @@ def search_fulltext(
         ORDER BY title_rank ASC, cat_rank ASC, sd.updated_at DESC
         LIMIT ? OFFSET ?
         """,
-        [like_first] + params + [limit, offset],
+        title_like_params + params + [limit, offset],
     ).fetchall()
 
     results = []
@@ -737,16 +1030,76 @@ def search_fulltext(
 def _single_term_sys_query(use_fts: bool, term: str) -> Tuple[str, List[Any]]:
     if use_fts and len(term) >= 3:
         return (
-            "SELECT sd.system_address FROM search_documents_fts fts "
+            "SELECT DISTINCT sd.system_address AS system_address FROM search_documents_fts fts "
             "JOIN search_documents sd ON fts.rowid = sd.doc_id "
             "WHERE search_documents_fts MATCH ?",
             [_quote_fts5_term(term)],
         )
     return (
-        "SELECT sd.system_address FROM search_documents sd "
-        "WHERE LOWER(sd.title || ' ' || sd.content) LIKE ? ESCAPE '\\'",
+        "SELECT DISTINCT sd.system_address AS system_address FROM search_documents sd "
+        "WHERE LOWER(COALESCE(sd.title, '') || ' ' || COALESCE(sd.content, '')) LIKE ? ESCAPE '\\'",
         [f"%{_escape_like(term.lower())}%"],
     )
+
+
+def _compile_sys_node(node: Any, use_fts: bool) -> Tuple[str, List[Any], bool]:
+    """
+    Compiles a query AST into a system_address SQL set expression using INTERSECT / UNION / EXCEPT
+    across all documents belonging to each star system.
+    Returns (sql, params, is_compound) so SQLite compound precedence is preserved cleanly.
+    """
+    if isinstance(node, _TermNode):
+        sql_s, p_s = _single_term_sys_query(use_fts, node.term)
+        return sql_s, p_s, False
+
+    if isinstance(node, _AndNode):
+        pos_children = [
+            c for c in node.children
+            if not (isinstance(c, _NotNode) or (isinstance(c, _TermNode) and c.negated))
+        ]
+        neg_children = [
+            c for c in node.children
+            if isinstance(c, _NotNode) or (isinstance(c, _TermNode) and c.negated)
+        ]
+        parts: List[str] = []
+        params: List[Any] = []
+        any_compound = False
+        for pc in pos_children:
+            p_sql, p_params, p_comp = _compile_sys_node(pc, use_fts)
+            if p_comp:
+                p_sql = f"SELECT system_address FROM ({p_sql})"
+            parts.append(p_sql)
+            params.extend(p_params)
+            any_compound = any_compound or p_comp
+
+        subquery = " INTERSECT ".join(parts)
+        is_compound = any_compound or (len(parts) > 1) or bool(neg_children)
+
+        for nc in neg_children:
+            if isinstance(nc, _TermNode):
+                n_sql, n_params = _single_term_sys_query(use_fts, nc.term)
+            else:
+                n_sql, n_params, n_comp = _compile_sys_node(nc.child, use_fts)
+                if n_comp:
+                    n_sql = f"SELECT system_address FROM ({n_sql})"
+            subquery = f"{subquery} EXCEPT {n_sql}"
+            params.extend(n_params)
+
+        return subquery, params, is_compound
+
+    if isinstance(node, _OrNode):
+        parts = []
+        params = []
+        for c in node.children:
+            c_sql, c_params, c_comp = _compile_sys_node(c, use_fts)
+            if c_comp:
+                c_sql = f"SELECT system_address FROM ({c_sql})"
+            parts.append(c_sql)
+            params.extend(c_params)
+        return " UNION ".join(parts), params, len(parts) > 1
+
+    # Fallback unreachable for valid ASTs
+    return "SELECT system_address FROM systems WHERE 1=0", [], False
 
 
 def build_system_address_subquery(
@@ -754,31 +1107,19 @@ def build_system_address_subquery(
 ) -> Optional[Tuple[str, List[Any], List[str], List[str]]]:
     """
     Returns (subquery_sql, params, pos_terms, neg_terms) for filtering systems.system_address IN (...),
-    evaluating positive AND and negative EXCEPT across all documents belonging to each system.
+    evaluating boolean AND (INTERSECT), OR (UNION), ( ) grouping, and negative EXCEPT across
+    all documents belonging to each system.
     Returns None if the search table is missing or the query has no positive terms.
     """
     if not _has_search_table(conn):
         return None
     ensure_search_index(conn)
-    pos_terms, neg_terms = parse_search_query(query)
-    if not pos_terms:
+    ast, pos_terms, neg_terms = parse_search_expression(query)
+    if ast is None or not pos_terms:
         return None
 
     use_fts = _has_fts5_table(conn)
-    parts: List[str] = []
-    params: List[Any] = []
-
-    for pt in pos_terms:
-        sql_part, p_part = _single_term_sys_query(use_fts, pt)
-        parts.append(sql_part)
-        params.extend(p_part)
-
-    subquery = " INTERSECT ".join(parts)
-    for nt in neg_terms:
-        sql_neg, p_neg = _single_term_sys_query(use_fts, nt)
-        subquery = f"{subquery} EXCEPT {sql_neg}"
-        params.extend(p_neg)
-
+    subquery, params, _ = _compile_sys_node(ast, use_fts)
     return subquery, params, pos_terms, neg_terms
 
 
