@@ -56,6 +56,10 @@
             <button id="btn-sync-spansh" data-requires-addon="spansh_sync" class="btn-icon" style="background: rgba(250, 204, 21, 0.12); border: 1px solid rgba(250, 204, 21, 0.4); color: #facc15; border-radius: 4px; padding: 2px 6px; cursor: pointer; display: none; align-items: center; gap: 3px; font-size: 0.72rem;" data-i18n-title="tip_sync_spansh" title="Spanshから環ホットスポット(Hotspots)・惑星採掘地点(PML)を即時照会・補完します">
               <span data-i18n="btn_sync_spansh_label">🪐 Spansh照会</span>
             </button>
+            <button id="btn-sync-traffic" data-requires-addon="traffic_monitor" class="btn-icon" style="background: rgba(52, 211, 153, 0.12); border: 1px solid rgba(52, 211, 153, 0.4); color: #34d399; border-radius: 4px; padding: 2px 6px; cursor: pointer; display: none; align-items: center; gap: 3px; font-size: 0.72rem;" data-i18n-title="tip_sync_traffic" title="EDSM/EDDNからこの星系の通行艦船数（累計・週間・日間）と船種内訳を手動照会・キャッシュします">
+              <span data-i18n="btn_sync_traffic_label">🚦 トラフィック</span>
+            </button>
+            <span id="current-system-traffic-badge" data-requires-addon="traffic_monitor" class="system-traffic-badge" style="display: none;"></span>
             <div id="current-system-state-badge" style="display: inline-flex; align-items: center; gap: 4px;"></div>
             <div id="current-system-economy-info" style="display: inline-flex; align-items: center; gap: 4px;"></div>
             <div id="current-system-external-badge" style="display: none;"></div>

@@ -6,6 +6,7 @@
 const ADDON_PATH_RULES = [
   { addonId: 'edsm_sync', test: (p) => /^\/api\/systems\/\d+\/edsm_sync$/.test(p) },
   { addonId: 'spansh_sync', test: (p) => /^\/api\/systems\/\d+\/spansh_sync$/.test(p) },
+  { addonId: 'traffic_monitor', test: (p) => /^\/api\/systems\/\d+\/traffic(_sync)?$/.test(p) },
   { addonId: 'tts', test: (p) => p === '/api/tts_settings' || p.startsWith('/api/tts/') },
   {
     addonId: 'export_share',
@@ -16,7 +17,7 @@ const ADDON_PATH_RULES = [
 // Addon ids whose UI elements are gated via CSS (see style.css's
 // body.addon-off-<id> rules) -- kept in sync with the [data-requires-addon]
 // attributes on those elements.
-const ADDON_GATED_IDS = ['edsm_sync', 'spansh_sync', 'tts', 'export_share'];
+const ADDON_GATED_IDS = ['edsm_sync', 'spansh_sync', 'tts', 'export_share', 'traffic_monitor'];
 
 window.__disabledAddons = window.__disabledAddons || {};
 const _lastToastAt = {};
@@ -118,6 +119,10 @@ function showAddonDisabledToast(name) {
   // plain CSS selector, to anything rendered later too.
   for (const addonId of ADDON_GATED_IDS) {
     document.body.classList.toggle(`addon-off-${addonId}`, !!window.__disabledAddons[addonId]);
+  }
+  window.__addonsInitialized = true;
+  if (typeof window.refreshTrafficMonitorBadge === 'function') {
+    window.refreshTrafficMonitorBadge();
   }
 
   const host = document.getElementById('addon-panels');

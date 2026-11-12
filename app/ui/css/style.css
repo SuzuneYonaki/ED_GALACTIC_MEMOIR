@@ -3871,7 +3871,8 @@ body.addon-off-edsm_sync.addon-off-spansh_sync #external-check-row,
 body.addon-off-edsm_sync [data-requires-addon="edsm_sync"],
 body.addon-off-spansh_sync [data-requires-addon="spansh_sync"],
 body.addon-off-tts [data-requires-addon="tts"],
-body.addon-off-export_share [data-requires-addon="export_share"] {
+body.addon-off-export_share [data-requires-addon="export_share"],
+body.addon-off-traffic_monitor [data-requires-addon="traffic_monitor"] {
   display: none !important;
 }
 
@@ -3896,3 +3897,18 @@ body.addon-off-export_share [data-requires-addon="export_share"] {
   margin-top: 4px;
 }
 
+
+
+/* Traffic Monitor Addon Badge */
+.system-traffic-badge {
+  background: rgba(52, 211, 153, 0.12);
+  border: 1px solid rgba(52, 211, 153, 0.38);
+  color: #6ee7b7;
+  border-radius: 4px;
+  padding: 2px 7px;
+  font-size: 0.72rem;
+  font-family: var(--font-mono);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
