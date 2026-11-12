@@ -49,6 +49,7 @@ let state = {
   miningScout: '',
   hasLargePad: false,
   maxArrivalDistLs: null,
+  regionFilter: null,
   sortBy: 'rarity_score',
   sortOrder: 'desc',
   sortBy2: null,
@@ -149,6 +150,8 @@ function updateStaticTexts() {
   renderSystemHeader();
   renderCurrentView();
   renderBodyInspector();
+  if (typeof renderActiveRegionFilterBanner === 'function') renderActiveRegionFilterBanner();
+  if (typeof window.refreshRegionMapLabels === 'function') window.refreshRegionMapLabels();
 }
 
 let lastCachedJumpStats = null;
@@ -485,6 +488,14 @@ async function fetchSystems(options = {}) {
   }
   if (state.maxArrivalDistLs !== null && state.maxArrivalDistLs !== undefined && state.maxArrivalDistLs !== '') {
     params.append('max_arrival_dist_ls', state.maxArrivalDistLs);
+  }
+  if (state.regionFilter && state.regionFilter.region_id) {
+    params.append('region_id', String(state.regionFilter.region_id));
+    if (state.regionFilter.sector_named_only) {
+      params.append('sector_named_only', 'true');
+    } else if (state.regionFilter.sector) {
+      params.append('sector', state.regionFilter.sector);
+    }
   }
 
   try {
@@ -3817,6 +3828,11 @@ document.addEventListener('DOMContentLoaded', () => {
     if (rLumAny) rLumAny.checked = true;
     state.luminosityMatchMode = 'any';
 
+    state.regionFilter = null;
+    if (typeof renderActiveRegionFilterBanner === 'function') {
+      renderActiveRegionFilterBanner();
+    }
+
     // 6. Date filter
     resetDateFilter();
 
@@ -6720,9 +6736,48 @@ if (typeof window !== 'undefined') {
   window.handleLiveJournalEvent = handleLiveJournalEvent;
   window.updateModuleVisibilityUI = updateModuleVisibilityUI;
   window.updateTtsPolicyView = updateTtsPolicyView;
+  window.renderActiveRegionFilterBanner = renderActiveRegionFilterBanner;
   window.switchCenterPaneView = switchCenterPaneView;
   window.initCenterPaneTabShortcuts = initCenterPaneTabShortcuts;
   window.updateViewButtons = updateViewButtons;
+}
+
+
+function renderActiveRegionFilterBanner() {
+  const bar = document.getElementById('active-region-sector-bar');
+  if (!bar) return;
+  const rf = state.regionFilter;
+  if (!rf || !rf.region_id) {
+    bar.style.display = 'none';
+    bar.innerHTML = '';
+    return;
+  }
+  const secLabel = rf.sector_named_only
+    ? (t('region_named_catalog_sector') || '固有名称・星表星系')
+    : (rf.sector || '');
+  const textParts = [rf.region_name_primary || `#${rf.region_id}`];
+  if (secLabel) textParts.push(secLabel);
+
+  bar.style.display = 'flex';
+  bar.innerHTML = '';
+  const lbl = document.createElement('span');
+  lbl.className = 'active-region-sector-text';
+  lbl.textContent = `🧭 ${textParts.join(' › ')}`;
+  bar.appendChild(lbl);
+
+  const clr = document.createElement('button');
+  clr.type = 'button';
+  clr.className = 'btn-page';
+  clr.style.cssText = 'padding: 1px 6px; font-size: 0.68rem;';
+  clr.textContent = '×';
+  clr.title = t('filter_clear') || 'クリア';
+  clr.addEventListener('click', () => {
+    state.regionFilter = null;
+    state.page = 1;
+    renderActiveRegionFilterBanner();
+    fetchSystems({ autoSelectTop: true });
+  });
+  bar.appendChild(clr);
 }
 
 

@@ -34,7 +34,8 @@ from app.services.edsm_service import edsm_service
 from app.services.landmark_service import load_landmarks, calculate_landmark_distances
 from app.services.footprint_service import footprint_service
 from app.parser.bioscan.adapters import build_system_context
-from app.utils.galactic_regions import get_region_from_coords
+from app.utils.galactic_regions import get_region_from_coords, find_region_id
+from app.services.region_service import get_regions_overview, get_region_sectors
 from app.services.bio_log import collect_bio_entries, query_bio_log
 from app.services.version_service import version_service
 from app.services.search_service import (
@@ -60,7 +61,7 @@ from app.services.physics_translator import (
 )
 
 from app.addons import addon_manager
-from app.utils.voxel import voxel_key, voxel_age_stats
+from app.utils.voxel import voxel_key, voxel_age_stats, extract_sector_name
 
 app = FastAPI(title="ED GALACTIC MEMOIR", description="Your Flight Log, Your Legacy.")
 
@@ -559,6 +560,27 @@ def get_landmarks_endpoint():
     """Return static galactic landmark coordinates and metadata."""
     return load_landmarks()
 
+
+@app.get("/api/regions/map")
+def get_regions_map_endpoint():
+    """Return downsampled 42 Galactic Regions map grid and per-region exploration overview."""
+    with closing(get_db_connection()) as conn:
+        cur_loc = get_current_cmdr_location(conn)
+        coords = None
+        if cur_loc and cur_loc.get("star_pos_x") is not None and cur_loc.get("star_pos_z") is not None:
+            coords = (cur_loc.get("star_pos_x"), cur_loc.get("star_pos_y"), cur_loc.get("star_pos_z"))
+        return get_regions_overview(conn, current_coords=coords)
+
+
+@app.get("/api/regions/{region_id}/sectors")
+def get_region_sectors_endpoint(region_id: int):
+    """Return visited sector progress breakdown within a specific Galactic Region."""
+    with closing(get_db_connection()) as conn:
+        data = get_region_sectors(conn, region_id)
+        if data is None:
+            return JSONResponse({"error": "Galactic region not found"}, status_code=404)
+        return data
+
 class BookmarkPayload(BaseModel):
     system_address: int
     body_id: int
@@ -796,6 +818,9 @@ def _parse_filter_min_count(val: Any) -> int:
 @app.get("/api/systems")
 def get_systems(
     q: Optional[str] = "",
+    region_id: Optional[int] = None,
+    sector: Optional[str] = None,
+    sector_named_only: bool = False,
     has_elw: Optional[Union[int, str]] = None,
     has_water_world: Optional[Union[int, str]] = None,
     has_ammonia: Optional[Union[int, str]] = None,
@@ -868,6 +893,19 @@ def get_systems(
 
         conditions = []
         params = []
+
+        if region_id is not None:
+            conn.create_function("ED_REGION_ID", 2, find_region_id)
+            conditions.append("systems.star_pos_x IS NOT NULL AND systems.star_pos_z IS NOT NULL AND ED_REGION_ID(systems.star_pos_x, systems.star_pos_z) = ?")
+            params.append(int(region_id))
+
+        if sector_named_only:
+            conn.create_function("ED_SECTOR_NAME", 1, extract_sector_name)
+            conditions.append("ED_SECTOR_NAME(systems.star_system) IS NULL")
+        elif sector and sector.strip():
+            conn.create_function("ED_SECTOR_NAME", 1, extract_sector_name)
+            conditions.append("ED_SECTOR_NAME(systems.star_system) = ?")
+            params.append(sector.strip())
 
         if q and q.strip():
             sub = build_system_address_subquery(conn, q)
@@ -1753,6 +1791,9 @@ def get_systems(
                 r["landable_bodies"] = []
             if "bookmarks" not in r:
                 r["bookmarks"] = []
+            if r.get("star_pos_x") is not None and r.get("star_pos_z") is not None:
+                reg = get_region_from_coords(r.get("star_pos_x"), r.get("star_pos_y"), r.get("star_pos_z"))
+                r["galactic_region_id"], r["galactic_region_en"], r["galactic_region_ja"] = reg
             lm_dists = calculate_landmark_distances(r.get("star_pos_x"), r.get("star_pos_y"), r.get("star_pos_z"))
             r.update(lm_dists)
 

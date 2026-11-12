@@ -335,6 +335,17 @@ function renderSystemList() {
     }
     const ageHtml = ageFormatted ? `<span class="system-card-age" title="${escapeHtml(ageTip)}">${escapeHtml(ageFormatted)}</span>` : '';
 
+    const regionLabel = (typeof getAppLang === 'function' && getAppLang() === 'en')
+      ? (sys.galactic_region_en || sys.galactic_region_ja || '')
+      : (sys.galactic_region_ja || sys.galactic_region_en || '');
+    const regionAlt = (typeof getAppLang === 'function' && getAppLang() === 'en')
+      ? (sys.galactic_region_ja || '')
+      : (sys.galactic_region_en || '');
+    const regionTip = regionAlt && regionAlt !== regionLabel ? `${regionLabel} (${regionAlt})` : regionLabel;
+    const regionHtml = regionLabel
+      ? `<div class="system-card-region" title="${escapeHtml(regionTip)}">🧭 ${escapeHtml(regionLabel)}</div>`
+      : '';
+
     const mainMass = (typeof formatSolarMass === 'function') ? formatSolarMass(sys.main_star_mass) : null;
     const totMass = (typeof formatSolarMass === 'function') ? formatSolarMass(sys.total_system_mass) : null;
     let massHtml = '';
@@ -374,6 +385,7 @@ function renderSystemList() {
         ${massHtml}
         ${ageHtml}
       </div>
+      ${regionHtml}
       ${voxelHtml}
       <div class="system-card-tags">
         ${tags.join('')}
@@ -524,6 +536,30 @@ function renderSystemHeader() {
     ? `[ ${sys.star_pos_x.toFixed(6)}, ${sys.star_pos_y.toFixed(6)}, ${sys.star_pos_z.toFixed(6)} ]`
     : '';
   document.getElementById('current-system-coords').innerText = coords;
+
+  const regionBadgeEl = document.getElementById('current-system-region-badge');
+  if (regionBadgeEl) {
+    const detailSys = (state.currentSystemData && state.currentSystemData.system) || {};
+    const regId = sys.galactic_region_id || detailSys.galactic_region_id;
+    const regEn = sys.galactic_region_en || detailSys.galactic_region_en;
+    const regJa = sys.galactic_region_ja || detailSys.galactic_region_ja;
+    const isEn = (typeof getAppLang === 'function' && getAppLang() === 'en');
+    const regName = isEn ? (regEn || regJa || '') : (regJa || regEn || '');
+    if (regName) {
+      regionBadgeEl.style.display = 'inline-flex';
+      regionBadgeEl.textContent = `🧭 ${regName}`;
+      regionBadgeEl.onclick = () => {
+        if (typeof window.openRegionMapModal === 'function') {
+          window.openRegionMapModal(regId || null);
+        }
+      };
+    } else {
+      regionBadgeEl.style.display = 'none';
+      regionBadgeEl.textContent = '';
+      regionBadgeEl.onclick = null;
+    }
+  }
+
   document.getElementById('current-system-fss-value').innerText = formatCredits(sys.total_fss_value || 0);
   document.getElementById('current-system-value').innerText = formatCredits(sys.total_potential_value || 0);
   

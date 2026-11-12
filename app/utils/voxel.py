@@ -9,6 +9,16 @@ _PROCGEN_NAME = re.compile(
 )
 
 
+def extract_sector_name(star_system: Optional[str]) -> Optional[str]:
+    """Extracts procedural Sector name (e.g. 'Dryooe Flyou', 'Col 285 Sector'), or None for non-procedural systems."""
+    if not star_system:
+        return None
+    m = _PROCGEN_NAME.match(str(star_system).strip())
+    if not m:
+        return None
+    return m.group("sector")
+
+
 def voxel_key(star_system: Optional[str]) -> Optional[str]:
     """'Noijo AA-Z e5' -> 'Noijo AA-Z e' (sector + voxel code + mass code).
 
