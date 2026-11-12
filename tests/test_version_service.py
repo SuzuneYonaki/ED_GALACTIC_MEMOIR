@@ -56,9 +56,9 @@ def test_version_checker_service_success():
     service = VersionCheckerService(repo="TestOwner/TestRepo", cache_ttl=100)
 
     mock_payload = {
-        "tag_name": "v0.9.0",
-        "name": "Release v0.9.0 - Major Overhaul",
-        "html_url": "https://github.com/TestOwner/TestRepo/releases/tag/v0.9.0",
+        "tag_name": "v99.0.0",
+        "name": "Release v99.0.0 - Major Overhaul",
+        "html_url": "https://github.com/TestOwner/TestRepo/releases/tag/v99.0.0",
         "body": "## Overview\n- Amazing new features added!\n- Better performance.",
         "published_at": "2026-09-18T12:00:00Z"
     }
@@ -71,9 +71,9 @@ def test_version_checker_service_success():
         # First call: hits network
         res = service.check_update()
         assert res["has_update"] is True
-        assert res["latest_version"] == "v0.9.0"
-        assert res["release_name"] == "Release v0.9.0 - Major Overhaul"
-        assert res["release_url"] == "https://github.com/TestOwner/TestRepo/releases/tag/v0.9.0"
+        assert res["latest_version"] == "v99.0.0"
+        assert res["release_name"] == "Release v99.0.0 - Major Overhaul"
+        assert res["release_url"] == "https://github.com/TestOwner/TestRepo/releases/tag/v99.0.0"
         assert "Amazing new features" in res["summary"]
         assert mock_urlopen.call_count == 1
 
