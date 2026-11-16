@@ -526,10 +526,14 @@ async function fetchSystems(options = {}) {
         }
       }
 
-      // If LIVE sync is active and CMDR jumped to a new system, auto-switch center pane to new system!
-      if (state.liveSyncEnabled && prevCmdrSys && cl.system_address && prevCmdrSys !== cl.system_address) {
-        jumpedToNewSystem = true;
-        selectSystem(cl.system_address);
+      // If LIVE sync is active and CMDR jumped to a new system (or selected system differs from current location), auto-switch!
+      if (state.liveSyncEnabled && cl.system_address) {
+        const isDifferentFromPrev = prevCmdrSys && prevCmdrSys !== cl.system_address;
+        const isDifferentFromSelected = !state.selectedSystem || Number(state.selectedSystem.system_address) !== Number(cl.system_address);
+        if (isDifferentFromPrev || isDifferentFromSelected) {
+          jumpedToNewSystem = true;
+          selectSystem(cl.system_address, false, true);
+        }
       }
     }
 
@@ -547,9 +551,11 @@ async function fetchSystems(options = {}) {
         state.jumpState = 'idle';
         selectSystem(state.systems[0].system_address);
       } else if (!state.selectedSystem || !state.systems.some(s => s.system_address === state.selectedSystem.system_address)) {
-        const targetAddress = (state.currentCmdrSystemAddress && state.systems.some(s => s.system_address === state.currentCmdrSystemAddress))
+        const targetAddress = (state.liveSyncEnabled && state.currentCmdrSystemAddress)
           ? state.currentCmdrSystemAddress
-          : state.systems[0].system_address;
+          : ((state.currentCmdrSystemAddress && state.systems.some(s => s.system_address === state.currentCmdrSystemAddress))
+              ? state.currentCmdrSystemAddress
+              : state.systems[0].system_address);
         selectSystem(targetAddress);
       }
     }
@@ -1192,8 +1198,9 @@ function renderCurrentView() {
     return;
   }
 
-  // 1. Arrived Waiting FSS (Honk) State Placeholder
-  if (state.jumpState === 'arrived_waiting_fss') {
+  // 1. Arrived Waiting FSS (Honk) State Placeholder (only show if no bodies have been discovered yet)
+  const hasExistingBodies = state.currentSystemData && Array.isArray(state.currentSystemData.bodies) && state.currentSystemData.bodies.length > 0;
+  if (state.jumpState === 'arrived_waiting_fss' && !hasExistingBodies) {
     const curSys = state.selectedSystem ? state.selectedSystem.star_system : (state.targetJumpSystem || 'Current System');
     container.innerHTML = `
       <div class="jump-status-placeholder" style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; min-height: 420px; color: var(--ed-cyan); text-align: center; padding: 40px;">
@@ -4158,11 +4165,25 @@ async function toggleLiveSync() {
   updateSortControlsUI();
   if (state.liveSyncEnabled) {
     state.jumpState = 'idle';
+    // Reconnect websocket immediately if disconnected
+    if (!liveWebSocket || liveWebSocket.readyState === WebSocket.CLOSED || liveWebSocket.readyState === WebSocket.CLOSING) {
+      connectLiveWebSocket();
+    }
+    // Fetch fresh stats to ensure current CMDR location is up to date
+    try {
+      const statsRes = await fetch('/api/stats');
+      if (statsRes.ok) {
+        const statsData = await statsRes.json();
+        if (statsData.current_location && statsData.current_location.system_address) {
+          state.currentCmdrSystemAddress = statsData.current_location.system_address;
+        }
+      }
+    } catch (e) {}
+
     await fetchSystems({ autoSelectTop: false });
-    if (state.currentCmdrSystemAddress) {
-      selectSystem(state.currentCmdrSystemAddress, false, false);
-    } else if (state.systems && state.systems.length > 0) {
-      selectSystem(state.systems[0].system_address, false, false);
+    const target = state.currentCmdrSystemAddress || (state.systems && state.systems.length > 0 ? state.systems[0].system_address : null);
+    if (target) {
+      await selectSystem(target, false, true);
     }
   } else {
     fetchSystems();
@@ -4342,6 +4363,7 @@ async function triggerLiveRefresh() {
 // Real-time Live Sync (WebSocket + Polling Fallback)
 let liveWebSocket = null;
 let liveWsRetryTimeout = null;
+let liveWsRetryCount = 0;
 
 function initLiveSync() {
   updateLiveSyncButtonUI();
@@ -4431,14 +4453,15 @@ function connectLiveWebSocket() {
     liveWsRetryTimeout = null;
   }
 
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = `${protocol}//${window.location.host}/ws/live`;
+  const loc = (typeof window !== 'undefined' && window.location && window.location.host) ? window.location : { protocol: 'http:', host: '127.0.0.1:8686' };
+  const protocol = loc.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = `${protocol}//${loc.host}/ws/live`;
 
   try {
     liveWebSocket = new WebSocket(wsUrl);
 
     liveWebSocket.onopen = () => {
-      // Ping interval to keep connection alive
+      liveWsRetryCount = 0;
       if (liveWebSocket._pingInterval) clearInterval(liveWebSocket._pingInterval);
       liveWebSocket._pingInterval = setInterval(() => {
         if (liveWebSocket && liveWebSocket.readyState === WebSocket.OPEN) {
@@ -4466,7 +4489,8 @@ function connectLiveWebSocket() {
       if (liveWebSocket && liveWebSocket._pingInterval) {
         clearInterval(liveWebSocket._pingInterval);
       }
-      liveWsRetryTimeout = setTimeout(connectLiveWebSocket, 1500);
+      const delay = Math.min(10000, 1500 * Math.pow(1.5, Math.min(liveWsRetryCount++, 5)));
+      liveWsRetryTimeout = setTimeout(connectLiveWebSocket, delay);
     };
 
     liveWebSocket.onerror = () => {
