@@ -99,7 +99,14 @@ class JournalWatcher(threading.Thread):
                 try:
                     st = os.stat(fpath)
                     if initial_seed:
-                        # On initial startup, record current file stats so only future writes trigger events
+                        # On startup, catch up unparsed content silently so DB is up to date with current game state
+                        try:
+                            was_live = self.parser.is_live
+                            self.parser.is_live = False
+                            self.parser.parse_file(fpath)
+                            self.parser.is_live = was_live
+                        except Exception as parse_err:
+                            print(f"[Watcher Seed Catchup Error] {fpath}: {parse_err}")
                         self.file_stats[fpath] = (st.st_size, st.st_mtime)
                     else:
                         # New file appeared while running: trigger full parse

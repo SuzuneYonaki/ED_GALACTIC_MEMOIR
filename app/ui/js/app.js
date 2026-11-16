@@ -527,12 +527,12 @@ async function fetchSystems(options = {}) {
       }
 
       // If LIVE sync is active and CMDR jumped to a new system (or selected system differs from current location), auto-switch!
-      if (state.liveSyncEnabled && cl.system_address) {
+      if (state.liveSyncEnabled && cl.system_address && !options.suppressAutoSelect) {
         const isDifferentFromPrev = prevCmdrSys && prevCmdrSys !== cl.system_address;
         const isDifferentFromSelected = !state.selectedSystem || Number(state.selectedSystem.system_address) !== Number(cl.system_address);
         if (isDifferentFromPrev || isDifferentFromSelected) {
           jumpedToNewSystem = true;
-          selectSystem(cl.system_address, false, true);
+          await selectSystem(cl.system_address, false, true);
         }
       }
     }
@@ -4341,13 +4341,15 @@ function scheduleLiveSystemRefresh(sysAddr = null, isNewSystem = false, starSyst
 
     try {
       fetchGlobalStats();
-      await fetchSystems();
-
       if (targetAddr) {
         await selectSystem(targetAddr, !isNew, false, true);
         checkAndAnnounceLiveFirstDiscovery(targetAddr, starName);
-      } else if (state.selectedSystem && state.selectedSystem.system_address) {
-        await selectSystem(state.selectedSystem.system_address, true, false, false);
+        await fetchSystems({ suppressAutoSelect: true });
+      } else {
+        await fetchSystems();
+        if (state.selectedSystem && state.selectedSystem.system_address) {
+          await selectSystem(state.selectedSystem.system_address, true, false, false);
+        }
       }
     } catch (err) {
       console.warn('Batch live refresh error:', err);

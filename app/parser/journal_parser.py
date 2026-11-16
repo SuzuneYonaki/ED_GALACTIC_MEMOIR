@@ -247,6 +247,21 @@ class JournalParser:
         self._has_unlocated_mining = False
         self._op_error_retries = {}
 
+    def _dispatch_event(self, event_name: str, event_data: dict):
+        if not self.event_callback:
+            return
+        if self.is_live:
+            try:
+                self.flush_dirty_systems()
+                if self.conn:
+                    self.conn.commit()
+            except Exception as e:
+                print(f"[JournalParser Live Commit Error] {e}")
+        try:
+            self.event_callback(event_name, event_data)
+        except Exception as e:
+            print(f"[JournalParser Event Callback Error] {e}")
+
     def _check_and_trigger_high_bio_alert(
         self,
         sys_addr: int | None,
@@ -464,64 +479,51 @@ class JournalParser:
             self.current_longitude = event_data["Longitude"]
 
         if event == "StartJump":
-            if self.event_callback:
-                self.event_callback("StartJump", event_data)
+            self._dispatch_event("StartJump", event_data)
         elif event in ["FSDJump", "Location", "CarrierJump"]:
             self._handle_jump_or_location(event_data, timestamp)
-            if self.event_callback:
-                self.event_callback(event, event_data)
+            self._dispatch_event(event, event_data)
         elif event == "FSSDiscoveryScan":
             self._handle_fss_discovery_scan(event_data)
-            if self.event_callback:
-                self.event_callback("FSSDiscoveryScan", event_data)
+            self._dispatch_event("FSSDiscoveryScan", event_data)
         elif event == "Scan":
             self._handle_scan(event_data, timestamp)
             self._update_last_targeted_body(event_data.get("SystemAddress"), event_data.get("BodyID"), event_data.get("BodyName"))
-            if self.event_callback:
-                self.event_callback("Scan", event_data)
+            self._dispatch_event("Scan", event_data)
         elif event in ["FSSBodySignals", "SAASignalsFound"]:
             self._handle_signals(event_data)
             self._update_last_targeted_body(event_data.get("SystemAddress"), event_data.get("BodyID"), event_data.get("BodyName"))
-            if self.event_callback:
-                self.event_callback(event, event_data)
+            self._dispatch_event(event, event_data)
         elif event == "SAAScanComplete":
             self._handle_saa_scan_complete(event_data)
             self._update_last_targeted_body(event_data.get("SystemAddress"), event_data.get("BodyID"), event_data.get("BodyName"))
-            if self.event_callback:
-                self.event_callback("SAAScanComplete", event_data)
+            self._dispatch_event("SAAScanComplete", event_data)
         elif event == "ScanOrganic":
             self._handle_scan_organic(event_data, timestamp)
             self._update_last_targeted_body(event_data.get("SystemAddress"), event_data.get("Body") or event_data.get("BodyID"))
-            if self.event_callback:
-                self.event_callback("ScanOrganic", event_data)
+            self._dispatch_event("ScanOrganic", event_data)
         elif event == "CodexEntry":
             self._handle_codex_entry(event_data, timestamp)
-            if self.event_callback:
-                self.event_callback("CodexEntry", event_data)
+            self._dispatch_event("CodexEntry", event_data)
         elif event in ["ApproachBody", "Touchdown"]:
             self._update_last_targeted_body(event_data.get("SystemAddress"), event_data.get("BodyID"), event_data.get("Body"))
         elif event == "LaunchSRV":
             self.in_srv = True
             self.srv_type = event_data.get("SRVType") or "srv"
-            if self.event_callback:
-                self.event_callback("LaunchSRV", event_data)
+            self._dispatch_event("LaunchSRV", event_data)
         elif event == "DockSRV":
             self.in_srv = False
             self.srv_type = None
-            if self.event_callback:
-                self.event_callback("DockSRV", event_data)
+            self._dispatch_event("DockSRV", event_data)
         elif event == "MaterialCollected":
             self._handle_material_collected(event_data, timestamp)
-            if self.event_callback:
-                self.event_callback("MaterialCollected", event_data)
+            self._dispatch_event("MaterialCollected", event_data)
         elif event == "MiningRefined":
             self._handle_mining_refined(event_data, timestamp)
-            if self.event_callback:
-                self.event_callback("MiningRefined", event_data)
+            self._dispatch_event("MiningRefined", event_data)
         elif event in ["Docked", "ApproachSettlement"]:
             self._handle_station_event(event_data, timestamp)
-            if self.event_callback:
-                self.event_callback(event, event_data)
+            self._dispatch_event(event, event_data)
 
     def _update_last_targeted_body(self, sys_addr: int, body_id=None, body_name=None):
         if not sys_addr:

@@ -267,15 +267,16 @@ def start_watcher():
     candidate_dirs = [
         get_saved_journal_dir(),
         DEFAULT_JOURNAL_DIR,
+        Path(os.path.expanduser("~/OneDrive/Saved Games/Frontier Developments/Elite Dangerous")),
         BASE_DIR,
         Path.cwd()
     ]
-    # Filter unique existing or potential directories
+    # Filter unique existing directories
     watched_dirs = []
     seen = set()
     for d in candidate_dirs:
         p = Path(d).resolve()
-        if str(p) not in seen:
+        if str(p) not in seen and p.exists() and p.is_dir():
             seen.add(str(p))
             watched_dirs.append(p)
 
