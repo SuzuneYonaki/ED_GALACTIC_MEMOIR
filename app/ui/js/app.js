@@ -78,6 +78,8 @@ let state = {
   lastJournalEventVersion: 0,
   jumpState: 'idle', // 'idle' | 'hyperspace' | 'arrived_waiting_fss' | 'scanned'
   targetJumpSystem: '',
+  sysmapZoom: 1.0,
+  sysmapScroll: null,
 };
 
 if (typeof window !== 'undefined') {
@@ -568,13 +570,17 @@ async function selectSystem(systemAddress, preserveSelectedBody = false, resetJu
       state.jumpState = 'idle';
     }
 
+    const prevSystemAddress = state.selectedSystem ? state.selectedSystem.system_address : null;
+    const isSameSystem = prevSystemAddress !== null && Number(prevSystemAddress) === Number(systemAddress);
+
     const res = await fetch(`/api/system/${systemAddress}`);
     const data = await res.json();
     state.currentSystemData = data;
     state.selectedSystem = data.system;
     state.previewExternalMap = false; // Reset external preview on system change
-    if (!preserveSelectedBody) {
+    if (!isSameSystem) {
       state.sysmapZoom = 1.0;
+      state.sysmapScroll = null;
     }
 
     if (data.system && data.system.last_targeted_body_id !== undefined && data.system.last_targeted_body_id !== null) {
@@ -1148,7 +1154,21 @@ async function dismissHonkWaitingAndShowCurrent() {
   }
 }
 
+function saveCurrentSysmapScroll() {
+  const container = document.getElementById('map-content');
+  if (!container) return;
+  const mapWrapper = container.querySelector('.ed-system-map-container');
+  if (mapWrapper && state.selectedSystem && state.selectedSystem.system_address) {
+    state.sysmapScroll = {
+      systemAddress: Number(state.selectedSystem.system_address),
+      scrollLeft: mapWrapper.scrollLeft,
+      scrollTop: mapWrapper.scrollTop
+    };
+  }
+}
+
 function renderCurrentView() {
+  saveCurrentSysmapScroll();
   const container = document.getElementById('map-content');
   container.innerHTML = '';
 
@@ -6751,6 +6771,7 @@ if (typeof window !== 'undefined') {
   window.setValueUnitMode = setValueUnitMode;
   window.cycleValueUnitMode = cycleValueUnitMode;
   window.updateHeaderValueDisplay = updateHeaderValueDisplay;
+  window.saveCurrentSysmapScroll = saveCurrentSysmapScroll;
   window.fetchGlobalStats = fetchGlobalStats;
   window.renderCurrentView = renderCurrentView;
   window.getSortedBodies = getSortedBodies;
@@ -6939,6 +6960,7 @@ if (typeof module !== 'undefined' && module.exports) {
     state,
     selectSystem,
     fetchSystems,
+    saveCurrentSysmapScroll,
     fetchGlobalStats,
     renderCurrentView,
     getSortedBodies,

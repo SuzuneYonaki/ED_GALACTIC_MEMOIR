@@ -618,6 +618,17 @@ function renderSystemMapView(container, hierarchyNodes, flatBodies) {
 
   let currentZoom = (state.sysmapZoom !== undefined && state.sysmapZoom !== null) ? state.sysmapZoom : 1.0;
 
+  function recordSysmapScroll() {
+    if (typeof state !== 'undefined' && state && state.selectedSystem && state.selectedSystem.system_address) {
+      state.sysmapScroll = {
+        systemAddress: Number(state.selectedSystem.system_address),
+        scrollLeft: mapWrapper.scrollLeft,
+        scrollTop: mapWrapper.scrollTop
+      };
+    }
+  }
+  mapWrapper.addEventListener('scroll', recordSysmapScroll, { passive: true });
+
   function applySysmapZoom(zoom) {
     stage.style.zoom = zoom;
     stage.style.transformOrigin = '0 0';
@@ -744,6 +755,7 @@ function renderSystemMapView(container, hierarchyNodes, flatBodies) {
 
     mapWrapper.scrollLeft = contentX * 1.0 - centerX;
     mapWrapper.scrollTop = contentY * 1.0 - centerY;
+    recordSysmapScroll();
   }
 
   function stepZoom(direction) {
@@ -764,6 +776,7 @@ function renderSystemMapView(container, hierarchyNodes, flatBodies) {
 
     mapWrapper.scrollLeft = contentX * currentZoom - centerX;
     mapWrapper.scrollTop = contentY * currentZoom - centerY;
+    recordSysmapScroll();
   }
 
   btnIn.addEventListener('click', (e) => {
@@ -811,6 +824,7 @@ function renderSystemMapView(container, hierarchyNodes, flatBodies) {
 
     mapWrapper.scrollLeft = contentX * currentZoom - mouseX;
     mapWrapper.scrollTop = contentY * currentZoom - mouseY;
+    recordSysmapScroll();
   };
 
   mapWrapper.addEventListener('wheel', onSysmapWheel, { passive: false });
@@ -885,6 +899,7 @@ function renderSystemMapView(container, hierarchyNodes, flatBodies) {
       mapWrapper.classList.remove('is-dragging');
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
+      recordSysmapScroll();
       // Reset hasDragged shortly after current event loop cycle so click handler can read it once
       setTimeout(() => {
         hasDragged = false;
@@ -912,6 +927,22 @@ function renderSystemMapView(container, hierarchyNodes, flatBodies) {
 
   container.appendChild(mapWrapper);
   container.appendChild(controls);
+
+  // Restore scroll position if viewing the same system
+  if (typeof state !== 'undefined' && state && state.sysmapScroll && state.selectedSystem && Number(state.sysmapScroll.systemAddress) === Number(state.selectedSystem.system_address)) {
+    const targetLeft = state.sysmapScroll.scrollLeft;
+    const targetTop = state.sysmapScroll.scrollTop;
+    mapWrapper.scrollLeft = targetLeft;
+    mapWrapper.scrollTop = targetTop;
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => {
+        if (mapWrapper) {
+          mapWrapper.scrollLeft = targetLeft;
+          mapWrapper.scrollTop = targetTop;
+        }
+      });
+    }
+  }
 }
 
 function getStarLabelStyle(iconLabel, isStar = false) {
