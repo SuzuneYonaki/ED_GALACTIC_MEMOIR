@@ -564,7 +564,15 @@ async function fetchSystems(options = {}) {
   }
 }
 
+let isSelectingSystem = false;
+let queuedSelectSystemArgs = null;
+
 async function selectSystem(systemAddress, preserveSelectedBody = false, resetJumpState = true, isLiveGggTrigger = false) {
+  if (isSelectingSystem) {
+    queuedSelectSystemArgs = [systemAddress, preserveSelectedBody, resetJumpState, isLiveGggTrigger];
+    return;
+  }
+  isSelectingSystem = true;
   try {
     if (resetJumpState) {
       state.jumpState = 'idle';
@@ -633,6 +641,13 @@ async function selectSystem(systemAddress, preserveSelectedBody = false, resetJu
     }
   } catch (err) {
     console.error('Failed to select system:', err);
+  } finally {
+    isSelectingSystem = false;
+    if (queuedSelectSystemArgs) {
+      const nextArgs = queuedSelectSystemArgs;
+      queuedSelectSystemArgs = null;
+      await selectSystem(...nextArgs);
+    }
   }
 }
 
@@ -4278,19 +4293,50 @@ function updateSortControlsUI() {
   }
 }
 
+let liveBatchTimer = null;
+let pendingLiveSystemAddress = null;
+let pendingLiveIsNewSystem = false;
+let pendingLiveStarSystemName = '';
+
+function scheduleLiveSystemRefresh(sysAddr = null, isNewSystem = false, starSystemName = '') {
+  if (sysAddr) {
+    pendingLiveSystemAddress = sysAddr;
+    if (isNewSystem) pendingLiveIsNewSystem = true;
+    if (starSystemName) pendingLiveStarSystemName = starSystemName;
+  }
+
+  if (liveBatchTimer) {
+    clearTimeout(liveBatchTimer);
+  }
+
+  liveBatchTimer = setTimeout(async () => {
+    liveBatchTimer = null;
+    const targetAddr = pendingLiveSystemAddress;
+    const isNew = pendingLiveIsNewSystem;
+    const starName = pendingLiveStarSystemName;
+    pendingLiveSystemAddress = null;
+    pendingLiveIsNewSystem = false;
+    pendingLiveStarSystemName = '';
+
+    try {
+      fetchGlobalStats();
+      await fetchSystems();
+
+      if (targetAddr) {
+        await selectSystem(targetAddr, !isNew, false, true);
+        checkAndAnnounceLiveFirstDiscovery(targetAddr, starName);
+      } else if (state.selectedSystem && state.selectedSystem.system_address) {
+        await selectSystem(state.selectedSystem.system_address, true, false, false);
+      }
+    } catch (err) {
+      console.warn('Batch live refresh error:', err);
+    }
+  }, 250);
+}
+
 async function triggerLiveRefresh() {
   if (!state.liveSyncEnabled) return;
-  
-  // Refresh global statistics
-  fetchGlobalStats();
-
-  // Refresh systems list
-  await fetchSystems();
-
-  // Refresh currently selected system in center pane if open
-  if (state.selectedSystem && state.selectedSystem.system_address) {
-    selectSystem(state.selectedSystem.system_address, true, false);
-  }
+  scheduleLiveSystemRefresh(null, false, '');
 }
 
 // Real-time Live Sync (WebSocket + Polling Fallback)
@@ -4367,43 +4413,15 @@ function handleLiveJournalEvent(eventName, eventData) {
     state.jumpState = 'arrived_waiting_fss';
     state.targetJumpSystem = eventData.StarSystem || '';
     clearSystemBioSummary();
-
-    // Auto switch to System view on FSDJump / CarrierJump / Location
     switchCenterPaneView('sysmap');
-
-    // Refresh global stats & systems list
-    fetchGlobalStats();
-    fetchSystems();
-
-    if (eventData.SystemAddress) {
-      selectSystem(eventData.SystemAddress, false, false, true);
-      checkAndAnnounceLiveFirstDiscovery(eventData.SystemAddress, eventData.StarSystem);
-    } else {
-      renderCurrentView();
-    }
+    scheduleLiveSystemRefresh(eventData.SystemAddress, true, eventData.StarSystem || '');
   } else if (eventName === 'FSSDiscoveryScan') {
     state.jumpState = 'scanned';
-    fetchGlobalStats();
-    fetchSystems();
-
     const sysAddr = eventData.SystemAddress || (state.selectedSystem ? state.selectedSystem.system_address : null);
-    if (sysAddr) {
-      selectSystem(sysAddr, false, false, true);
-      checkAndAnnounceLiveFirstDiscovery(sysAddr, eventData.StarSystem || (state.selectedSystem ? state.selectedSystem.star_system : ''));
-    } else {
-      triggerLiveRefresh();
-    }
+    scheduleLiveSystemRefresh(sysAddr, false, eventData.StarSystem || (state.selectedSystem ? state.selectedSystem.star_system : ''));
   } else if (eventName === 'Scan' || eventName === 'SAAScanComplete' || eventName === 'ScanOrganic' || eventName === 'FSSBodySignals' || eventName === 'SAASignalsFound') {
     const sysAddr = eventData.SystemAddress || (state.selectedSystem ? state.selectedSystem.system_address : null);
-    fetchGlobalStats();
-    fetchSystems();
-
-    if (sysAddr && state.selectedSystem && String(state.selectedSystem.system_address) === String(sysAddr)) {
-      selectSystem(sysAddr, true, false, true);
-      checkAndAnnounceLiveFirstDiscovery(sysAddr, eventData.StarSystem || (state.selectedSystem ? state.selectedSystem.star_system : ''));
-    } else {
-      triggerLiveRefresh();
-    }
+    scheduleLiveSystemRefresh(sysAddr, false, eventData.StarSystem || (state.selectedSystem ? state.selectedSystem.star_system : ''));
   }
 }
 
@@ -6780,6 +6798,7 @@ if (typeof window !== 'undefined') {
   window.renderBioOnlyView = renderBioOnlyView;
   window.renderVisitsTimeline = renderVisitsTimeline;
   window.renderPhysicsReport = renderPhysicsReport;
+  window.scheduleLiveSystemRefresh = scheduleLiveSystemRefresh;
   window.handleLiveJournalEvent = handleLiveJournalEvent;
   window.updateModuleVisibilityUI = updateModuleVisibilityUI;
   window.updateTtsPolicyView = updateTtsPolicyView;
@@ -6969,6 +6988,7 @@ if (typeof module !== 'undefined' && module.exports) {
     renderBioOnlyView,
     renderVisitsTimeline,
     renderPhysicsReport,
+    scheduleLiveSystemRefresh,
     handleLiveJournalEvent,
     updateModuleVisibilityUI,
     updateTtsPolicyView,
