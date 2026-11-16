@@ -2704,7 +2704,8 @@ def get_module_settings_endpoint():
     default_settings = {
         "exobiology": True,
         "rhino": False,
-        "faction": False
+        "faction": False,
+        "stream_capture_mode": False
     }
     if MODULE_SETTINGS_FILE.exists():
         try:

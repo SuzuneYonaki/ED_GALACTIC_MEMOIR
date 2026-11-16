@@ -177,8 +177,53 @@ def wait_for_server(url, timeout=12.0):
             time.sleep(0.15)
     return False
 
+def setup_webview_capture_flags(stream_mode=False):
+    """Configures Chromium/WebView2 flags for OBS Studio and Window Capture compatibility.
+    
+    - CalculateNativeWinOcclusion & disable-backgrounding-occluded-windows:
+      Always disabled to ensure uninterrupted background rendering when the app is placed
+      behind Elite Dangerous or other full-screen windows, preventing video stream freeze.
+    - disable-gpu & disable-gpu-compositing:
+      Optional stream compatibility mode for multi-GPU setups or BitBlt capture mode
+      to prevent black screen issues.
+    """
+    flags = [
+        "--disable-features=CalculateNativeWinOcclusion",
+        "--disable-backgrounding-occluded-windows",
+    ]
+    if stream_mode:
+        flags.extend([
+            "--disable-gpu",
+            "--disable-gpu-compositing",
+        ])
+    
+    new_args_str = " ".join(flags)
+    existing_args = os.environ.get("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "").strip()
+    if existing_args:
+        merged = existing_args
+        for f in flags:
+            if f not in merged:
+                merged += f" {f}"
+        os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = merged.strip()
+    else:
+        os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = new_args_str
+    log_msg(f"[WebView2 Capture Flags] {os.environ.get('WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS')}")
+
 def main():
     log_msg(f"=== Starting ED Journal Analyzer (PID {os.getpid()}) ===")
+    
+    # Check if stream capture compatibility mode is enabled via CLI flags or module_settings.json
+    cli_stream_mode = "--stream-mode" in sys.argv or "--disable-gpu" in sys.argv
+    saved_stream_mode = False
+    try:
+        settings_file = DATA_DIR / "module_settings.json"
+        if settings_file.exists():
+            import json
+            with open(settings_file, "r", encoding="utf-8") as f:
+                saved_stream_mode = bool(json.load(f).get("stream_capture_mode", False))
+    except Exception:
+        pass
+    setup_webview_capture_flags(stream_mode=(cli_stream_mode or saved_stream_mode))
     
     # 0. Ensure database tables and schema migrations are applied
     try:

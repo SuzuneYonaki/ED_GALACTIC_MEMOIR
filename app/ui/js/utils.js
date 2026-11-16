@@ -347,7 +347,8 @@ function getBodyIconLabel(body) {
 const defaultModuleSettings = {
   exobiology: true,
   rhino: false,
-  faction: false
+  faction: false,
+  stream_capture_mode: false
 };
 
 function getModuleSettings() {

@@ -662,6 +662,11 @@ const i18n = {
     mod_exobiology: "🌿 Exobiology（生物予測・BIOバッジ・探査ビュー）",
     mod_rhino: "🦏 Rhino採掘（採掘拠点バッジ・座標マップ・履歴・採掘ビュー）",
     mod_faction: "🏛️ 人口・勢力/BGS（星系人口・支配勢力・経済・BGS状態）",
+    settings_stream_label: "🎥 配信・OBSウィンドウキャプチャ互換設定",
+    settings_stream_desc: "OBS Studio や Discord 等で本アプリをウィンドウキャプチャして配信・録画する際の設定です。",
+    mod_stream_capture: "📺 OBSキャプチャ互換モード（GPUアクセラレーション無効化）",
+    mod_stream_capture_desc: "OBSのウィンドウキャプチャで画面が真っ暗になる場合やマルチGPU環境で映像が取り込めない場合に有効化してください（次回起動時に適用されます）",
+    stream_occlusion_notice: "※ゲーム画面の背面に隠れた場合でも映像がフリーズしないバックグラウンド描画機能は常時有効化されています。",
     population_label: "星系人口",
 
     // UI Theme Settings
@@ -1843,6 +1848,11 @@ const i18n = {
     mod_exobiology: "🌿 Exobiology (Bio Predictions, Badges & View)",
     mod_rhino: "🦏 Rhino Mining (Mining Badges, Coords Map, History & View)",
     mod_faction: "🏛️ Population & Faction / BGS (Population, Controlling Faction, Economy, BGS State)",
+    settings_stream_label: "🎥 Streaming & OBS Window Capture Settings",
+    settings_stream_desc: "Settings for streaming and recording via Window Capture in OBS Studio, Discord, etc.",
+    mod_stream_capture: "📺 OBS Capture Compatibility Mode (Disable GPU Acceleration)",
+    mod_stream_capture_desc: "Enable this if OBS Window Capture shows a black screen or fails on multi-GPU setups (applied upon next restart)",
+    stream_occlusion_notice: "※ Background rendering is permanently enabled to prevent video freeze when placed behind the game window.",
     population_label: "System Population",
 
     // UI Theme Settings

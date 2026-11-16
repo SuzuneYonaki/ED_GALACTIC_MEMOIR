@@ -271,6 +271,29 @@
                 </label>
               </div>
             </div>
+
+            <!-- Streaming & OBS Window Capture Customization -->
+            <div style="margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border-color);">
+              <label style="font-weight: bold; color: var(--ed-orange); font-size: 0.85rem; margin-bottom: 6px; display: block;" data-i18n="settings_stream_label">
+                🎥 配信・OBSウィンドウキャプチャ互換設定
+              </label>
+              <div style="font-size: 0.75rem; color: var(--text-secondary); line-height: 1.5; margin-bottom: 8px;" data-i18n="settings_stream_desc">
+                OBS Studio や Discord 等で本アプリをウィンドウキャプチャして配信・録画する際の設定です。
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 8px; background: rgba(0,0,0,0.25); padding: 10px; border-radius: 6px; border: 1px solid var(--border-color);">
+                <label class="star-cb-label" style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                  <input type="checkbox" id="cb-stream-capture-mode" class="module-toggle-cb" data-module="stream_capture_mode" style="accent-color: #f43f5e; cursor: pointer;">
+                  <div>
+                    <span style="color: #fda4af; font-weight: bold;" data-i18n="mod_stream_capture">📺 OBSキャプチャ互換モード（GPUアクセラレーション無効化）</span>
+                    <div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 1px;" data-i18n="mod_stream_capture_desc">OBSのウィンドウキャプチャで画面が真っ暗になる場合やマルチGPU環境で映像が取り込めない場合に有効化してください（次回起動時に適用されます）</div>
+                  </div>
+                </label>
+                <div style="font-size: 0.7rem; color: #38bdf8; display: flex; align-items: center; gap: 6px; margin-top: 2px;">
+                  <span>ℹ️</span>
+                  <span data-i18n="stream_occlusion_notice">※ゲーム画面の背面に隠れた場合でも映像がフリーズしないバックグラウンド描画機能は常時有効化されています。</span>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
