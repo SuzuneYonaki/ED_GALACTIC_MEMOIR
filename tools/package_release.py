@@ -33,7 +33,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 DIST_DIR = REPO / "dist"
-EXE_NAME = "ED_Journal_Analyzer.exe"
+EXE_NAME = "ED_GALACTIC_MEMOIR.exe" if (DIST_DIR / "ED_GALACTIC_MEMOIR.exe").exists() else "ED_Journal_Analyzer.exe"
 ADDONS_SRC = REPO / "addons"
 
 # Dev-only addons that exist purely to exercise the addon mechanism during
@@ -91,8 +91,15 @@ def main():
         zf.write(exe_path, EXE_NAME)
         for src, arcname in addon_files:
             zf.write(src, arcname)
-
     print(f"[package_release] Wrote {out_path}")
+
+    # Standard distribution zip
+    dist_zip = DIST_DIR / "ED_GALACTIC_MEMOIR.zip"
+    with zipfile.ZipFile(dist_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.write(exe_path, EXE_NAME)
+        for src, arcname in addon_files:
+            zf.write(src, arcname)
+    print(f"[package_release] Wrote {dist_zip}")
     print(f"[package_release]   1 exe + {len(addon_files)} addon file(s)")
 
 
