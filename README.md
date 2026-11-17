@@ -163,10 +163,10 @@ python run.py
 - **完全性検証用 SHA-256 チェックサム (v0.9.3)**:
   ```text
   ED_GALACTIC_MEMOIR.exe:
-  b00eb4c08b50685d8e0251297421011d5923007acfe74aaffc172e4f1adaf484
+  f0114a8fc2cc3966411f3f8cfbd3671edf5bbd970aea5ea70c7f7cd59b58d1d7
 
   ED_GALACTIC_MEMOIR.zip:
-  3981a22aa4b77b19ae39f7db2098792d6ed20ad288ac3d4b95eb2ad340ac7bb5
+  b2ff05c17832d2b5a8da207ff66a631b384ee1c64aff4a99c0c5239d6bf5678a
   ```
 
 #### 3. 🌐 VirusTotal による多重エンジン検証（推奨・無料）

@@ -229,6 +229,7 @@ class JournalParser:
         self.conn = db_conn or get_db_connection()
         self.cursor = self.conn.cursor()
         self.dirty_systems = set()
+        self.modified_system_addresses = set()
         self.event_callback = event_callback
         self.is_live = is_live
         self._announced_high_bio_bodies = set()
@@ -433,6 +434,7 @@ class JournalParser:
         if not self.dirty_systems:
             return
         for sys_addr in self.dirty_systems:
+            self.modified_system_addresses.add(sys_addr)
             self._update_system_stats(sys_addr)
         self.dirty_systems.clear()
         self.conn.commit()
@@ -650,6 +652,9 @@ class JournalParser:
         # Record station if present in Location / FSDJump
         if data.get("StationName"):
             self._handle_station_event(data, timestamp)
+
+        if sys_addr:
+            self.dirty_systems.add(sys_addr)
 
         # Queue background EDSM discovery verification
         if sys_addr and star_sys:

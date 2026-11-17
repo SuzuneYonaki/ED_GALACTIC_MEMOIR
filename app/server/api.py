@@ -44,6 +44,7 @@ from app.services.search_service import (
     rebuild_search_index,
     build_system_address_subquery,
     safe_sync_system_search_index,
+    ensure_search_index,
 )
 from app.live.rhino.note_integrator import update_body_note_in_db
 from app.live.rhino.tracker import sync_body_mining_to_note, extract_all_mining_materials_for_body, extract_rhino_mining_sites
@@ -2539,11 +2540,16 @@ def run_background_parse():
         try:
             _idx_conn = get_db_connection()
             try:
-                rebuild_search_index(_idx_conn)
+                ensure_search_index(_idx_conn)
+                mod_systems = getattr(parser, "modified_system_addresses", None)
+                if mod_systems:
+                    for mod_addr in mod_systems:
+                        safe_sync_system_search_index(_idx_conn, mod_addr)
+                    _idx_conn.commit()
             finally:
                 _idx_conn.close()
         except Exception as _idx_err:
-            print(f"[SearchIndex] Background rebuild warning: {_idx_err}")
+            print(f"[SearchIndex] Background index update warning: {_idx_err}")
         scan_state["message"] = f"Successfully parsed {tot} journal files from {target_dir}."
     except Exception as e:
         scan_state["message"] = f"Error: {str(e)}"
