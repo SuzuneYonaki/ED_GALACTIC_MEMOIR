@@ -7,7 +7,7 @@ const ADDON_PATH_RULES = [
   { addonId: 'edsm_sync', test: (p) => /^\/api\/systems\/\d+\/edsm_sync$/.test(p) },
   { addonId: 'spansh_sync', test: (p) => /^\/api\/systems\/\d+\/spansh_sync$/.test(p) },
   { addonId: 'traffic_monitor', test: (p) => /^\/api\/systems\/\d+\/traffic(_sync)?$/.test(p) },
-  { addonId: 'tts', test: (p) => p === '/api/tts_settings' || p.startsWith('/api/tts/') },
+  { addonId: 'tts', test: (p) => p.startsWith('/api/tts/') },
   {
     addonId: 'export_share',
     test: (p) => p.startsWith('/api/export/') || p.startsWith('/api/import/') || p === '/api/system/reveal-file',
@@ -60,15 +60,22 @@ function showAddonDisabledToast(name) {
     toast.style.fontSize = '0.82rem';
     toast.style.lineHeight = '1.5';
     toast.style.transition = 'opacity 0.3s';
+    toast.style.pointerEvents = 'none'; // Never block mouse clicks or card interaction underneath
     document.body.appendChild(toast);
   }
   const msg = (typeof t === 'function' ? t('addon_disabled_toast', { name }) : null)
     || `⚠️ This feature is currently disabled (${name}).`;
   toast.textContent = msg;
+  toast.style.display = 'block';
+  toast.style.pointerEvents = 'none';
   toast.style.opacity = '1';
   clearTimeout(toast._hideTimer);
+  clearTimeout(toast._removeTimer);
   toast._hideTimer = setTimeout(() => {
     toast.style.opacity = '0';
+    toast._removeTimer = setTimeout(() => {
+      toast.style.display = 'none';
+    }, 350);
   }, 5000);
 }
 
