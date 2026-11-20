@@ -4111,10 +4111,11 @@ document.addEventListener('DOMContentLoaded', () => {
   initLiveSync();
 });
 
-async function triggerManualRescan() {
+async function triggerManualRescan(forceFull = false) {
   updateRescanButtonUI(true);
   try {
-    await fetch('/api/scan_now', { method: 'POST' });
+    const url = forceFull ? '/api/scan_now?force=true' : '/api/scan_now';
+    await fetch(url, { method: 'POST' });
     pollScanProgress();
   } catch (err) {
     console.error('Failed to trigger scan:', err);
@@ -4127,6 +4128,8 @@ function updateRescanButtonUI(isScanning) {
   const icon = document.getElementById('rescan-icon');
   const text = document.getElementById('rescan-text');
   const modalBtn = document.getElementById('btn-modal-rescan');
+  const modalForceBtn = document.getElementById('btn-modal-force-rescan');
+  if (modalForceBtn) modalForceBtn.disabled = isScanning;
 
   if (btn) {
     btn.disabled = isScanning;
@@ -4564,13 +4567,22 @@ function pollScanProgress() {
           fetchSystems();
         }
       } else {
-        if (bannerTitle) bannerTitle.innerText = t('scan_complete') || 'ジャーナル解析完了';
-        if (bannerCount) bannerCount.innerText = `${st.total} / ${st.total}`;
-        if (bannerPercent) bannerPercent.innerText = '100%';
-        if (bannerFile) bannerFile.innerText = t('scan_success_tip') || `${st.total} 件のジャーナルログを正常に同期しました`;
-        if (progressFill) progressFill.style.width = '100%';
-        if (spinner) spinner.style.display = 'none';
-        if (banner) banner.classList.add('completed');
+        const hasError = Boolean(st.error || (st.message && String(st.message).startsWith('Error:')));
+        if (hasError) {
+          if (bannerTitle) bannerTitle.innerText = t('scan_error_title') || '⚠️ ジャーナル解析エラー';
+          if (bannerCount) bannerCount.innerText = `${st.current || 0} / ${st.total || 0}`;
+          if (bannerPercent) bannerPercent.innerText = `${st.percent || 0}%`;
+          if (bannerFile) bannerFile.innerText = st.message || 'Scan interrupted';
+          if (spinner) spinner.style.display = 'none';
+        } else {
+          if (bannerTitle) bannerTitle.innerText = t('scan_complete') || 'ジャーナル解析完了';
+          if (bannerCount) bannerCount.innerText = `${st.total} / ${st.total}`;
+          if (bannerPercent) bannerPercent.innerText = '100%';
+          if (bannerFile) bannerFile.innerText = t('scan_success_tip') || `${st.total} 件のジャーナルログを正常に同期しました`;
+          if (progressFill) progressFill.style.width = '100%';
+          if (spinner) spinner.style.display = 'none';
+          if (banner) banner.classList.add('completed');
+        }
 
         clearInterval(scanPollInterval);
         scanPollInterval = null;
@@ -5772,6 +5784,31 @@ async function initSettingsModal() {
 
       // Trigger scan
       await triggerManualRescan();
+      if (modalScanStatusText) {
+        modalScanStatusText.innerText = (typeof t === 'function' ? t('scan_started') : null) || 'ログスキャンを開始しました...';
+      }
+    });
+  }
+
+  const btnModalForceRescan = document.getElementById('btn-modal-force-rescan');
+  if (btnModalForceRescan) {
+    btnModalForceRescan.addEventListener('click', async () => {
+      const msg = (typeof t === 'function' ? t('confirm_force_rescan') : null)
+        || '全てのジャーナルログを最初から読み直しますか？';
+      const ok = (typeof showAppConfirm === 'function') ? await showAppConfirm(msg) : window.confirm(msg);
+      if (!ok) return;
+
+      if (inputJournalDir && inputJournalDir.value.trim()) {
+        try {
+          await fetch('/api/app_settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ journal_dir: inputJournalDir.value.trim() })
+          });
+        } catch (e) {}
+      }
+
+      await triggerManualRescan(true);
       if (modalScanStatusText) {
         modalScanStatusText.innerText = (typeof t === 'function' ? t('scan_started') : null) || 'ログスキャンを開始しました...';
       }

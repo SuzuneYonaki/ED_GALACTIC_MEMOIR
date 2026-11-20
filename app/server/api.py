@@ -123,8 +123,10 @@ async def add_no_cache_headers(request, call_next):
 
 
 # Global scan status
+_scan_lock = threading.Lock()
 scan_state = {
     "is_scanning": False,
+    "error": False,
     "current": 0,
     "total": 0,
     "percent": 0,
@@ -2497,9 +2499,12 @@ def get_saved_journal_dir() -> Path:
             return p
     return DEFAULT_JOURNAL_DIR
 
-def run_background_parse():
+def run_background_parse(force_full: bool = False):
     global scan_state
+    if not _scan_lock.acquire(blocking=False):
+        return
     scan_state["is_scanning"] = True
+    scan_state["error"] = False
     scan_state["current"] = 0
     scan_state["total"] = 0
     scan_state["percent"] = 0
@@ -2521,6 +2526,14 @@ def run_background_parse():
         # live-update websocket broadcast, which is UI-only and would flood
         # connected clients with thousands of startup-scan events).
         addon_event_callback = lambda name, data: addon_manager.dispatch("journal_event", event_name=name, event_data=data)
+        if force_full:
+            scan_state["message"] = "Resetting parsed file history for full rescan..."
+            _rst_conn = get_db_connection()
+            try:
+                _rst_conn.execute("DELETE FROM parsed_files")
+                _rst_conn.commit()
+            finally:
+                _rst_conn.close()
         parser = JournalParser(event_callback=addon_event_callback)
         target_dir = get_saved_journal_dir()
         tot = parser.parse_all_journals(str(target_dir), progress_callback=cb)
@@ -2540,21 +2553,29 @@ def run_background_parse():
         try:
             _idx_conn = get_db_connection()
             try:
-                ensure_search_index(_idx_conn)
-                mod_systems = getattr(parser, "modified_system_addresses", None)
-                if mod_systems:
-                    for mod_addr in mod_systems:
-                        safe_sync_system_search_index(_idx_conn, mod_addr)
-                    _idx_conn.commit()
+                if force_full:
+                    rebuild_search_index(_idx_conn)
+                else:
+                    ensure_search_index(_idx_conn)
+                    mod_systems = getattr(parser, "modified_system_addresses", None)
+                    if mod_systems:
+                        for mod_addr in mod_systems:
+                            safe_sync_system_search_index(_idx_conn, mod_addr)
+                        _idx_conn.commit()
             finally:
                 _idx_conn.close()
         except Exception as _idx_err:
             print(f"[SearchIndex] Background index update warning: {_idx_err}")
         scan_state["message"] = f"Successfully parsed {tot} journal files from {target_dir}."
     except Exception as e:
+        scan_state["error"] = True
         scan_state["message"] = f"Error: {str(e)}"
     finally:
         scan_state["is_scanning"] = False
+        try:
+            _scan_lock.release()
+        except RuntimeError:
+            pass
         manager.notify_update_from_thread(None)
 
 @app.get("/api/app_settings")
@@ -2664,12 +2685,12 @@ def restart_app():
     return {"status": "restarting"}
 
 @app.post("/api/scan_now")
-def trigger_scan(background_tasks: BackgroundTasks):
+def trigger_scan(background_tasks: BackgroundTasks, force: bool = False):
     global scan_state
     if scan_state["is_scanning"]:
         return {"status": "already_scanning", "state": scan_state}
-    background_tasks.add_task(run_background_parse)
-    return {"status": "started", "state": scan_state}
+    background_tasks.add_task(run_background_parse, force_full=bool(force))
+    return {"status": "started", "force": bool(force), "state": scan_state}
 
 @app.get("/api/scan_status")
 def get_scan_status():
