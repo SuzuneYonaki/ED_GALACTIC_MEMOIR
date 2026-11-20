@@ -65,6 +65,27 @@
           </div>
 
           <div style="background: rgba(0,0,0,0.2); border: 1px solid var(--border-color); border-radius: 6px; padding: 12px;">
+            <div style="font-weight: bold; color: #fff; margin-bottom: 4px;" data-i18n="settings_user_data_title">💾 ブックマーク・メモ帳データのバックアップ</div>
+            <div style="font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 10px;" data-i18n="settings_user_data_desc">
+              ブックマーク、天体メモ、採掘拠点メモ、星系メモをJSONファイルに書き出し・読み込みします
+            </div>
+            <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
+              <button type="button" id="btn-export-user-data" class="btn-primary" style="padding: 6px 12px; font-size: 0.78rem;" data-i18n="btn_export_user_data">
+                📤 ファイルへ書き出し (JSON)
+              </button>
+              <button type="button" id="btn-import-user-data" class="view-btn" style="padding: 6px 12px; font-size: 0.78rem;" data-i18n="btn_import_user_data">
+                📥 ファイルから読み込み
+              </button>
+              <select id="select-user-data-conflict" class="sort-select" style="font-size: 0.74rem; padding: 4px 8px;" data-i18n-title="tip_user_data_conflict" title="重複データの扱い">
+                <option value="skip" data-i18n="user_data_conflict_skip">重複時は既存を保持 (スキップ)</option>
+                <option value="overwrite" data-i18n="user_data_conflict_overwrite">重複時は上書き</option>
+              </select>
+              <input type="file" id="input-import-user-data-file" accept=".json,application/json" style="display: none;">
+            </div>
+            <div id="user-data-backup-status" style="font-size: 0.75rem; color: var(--ed-cyan); margin-top: 6px; display: none;"></div>
+          </div>
+
+          <div style="background: rgba(0,0,0,0.2); border: 1px solid var(--border-color); border-radius: 6px; padding: 12px;">
             <div style="display: flex; justify-content: space-between; align-items: center;">
               <div>
                 <div style="font-weight: bold; color: #fff;" data-i18n="settings_reset_share_warn_title">🤝 CMDR Data Share 警告リセット</div>

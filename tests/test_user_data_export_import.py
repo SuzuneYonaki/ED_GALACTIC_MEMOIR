@@ -155,3 +155,33 @@ def test_user_data_api_endpoints(tmp_path, monkeypatch):
     # Invalid import
     r_bad = client.post("/api/user_data/import", json={"data": {"format": "bad"}, "conflict_mode": "skip"})
     assert r_bad.status_code == 400
+
+
+def test_user_data_backup_ui_wiring_and_i18n():
+    from pathlib import Path
+
+    modals = Path("app/ui/components/modals.html").read_text(encoding="utf-8")
+    for eid in (
+        "btn-export-user-data",
+        "btn-import-user-data",
+        "select-user-data-conflict",
+        "input-import-user-data-file",
+        "user-data-backup-status",
+    ):
+        assert f'id="{eid}"' in modals, f"Missing element id {eid} in modals.html"
+
+    app_js = Path("app/ui/js/app.js").read_text(encoding="utf-8")
+    assert "/api/user_data/export" in app_js
+    assert "/api/user_data/import" in app_js
+
+    i18n_js = Path("app/ui/js/i18n.js").read_text(encoding="utf-8")
+    for key in (
+        "settings_user_data_title",
+        "btn_export_user_data",
+        "btn_import_user_data",
+        "user_data_conflict_skip",
+        "user_data_conflict_overwrite",
+        "user_data_export_success",
+        "user_data_import_success",
+    ):
+        assert i18n_js.count(f"{key}:") == 2, f"Key {key} must appear in both ja and en in i18n.js"

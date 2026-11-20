@@ -5588,6 +5588,110 @@ async function initSettingsModal() {
     });
   }
 
+  // User Data Backup (Export / Import JSON)
+  (function initUserDataBackupUI() {
+    const btnExport = document.getElementById('btn-export-user-data');
+    const btnImport = document.getElementById('btn-import-user-data');
+    const fileInput = document.getElementById('input-import-user-data-file');
+    const conflictSel = document.getElementById('select-user-data-conflict');
+    const statusEl = document.getElementById('user-data-backup-status');
+
+    function setBackupStatus(msg, isError = false) {
+      if (!statusEl) return;
+      statusEl.style.display = msg ? 'block' : 'none';
+      statusEl.style.color = isError ? '#f87171' : 'var(--ed-cyan)';
+      statusEl.textContent = msg || '';
+    }
+
+    if (btnExport && !btnExport.dataset.bound) {
+      btnExport.dataset.bound = '1';
+      btnExport.addEventListener('click', async () => {
+        btnExport.disabled = true;
+        try {
+          const res = await fetch('/api/user_data/export');
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const payload = await res.json();
+          const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          const d = new Date();
+          const ts = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}_${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`;
+          a.href = url;
+          a.download = `ed_memoir_backup_${ts}.json`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+
+          const bmCount = (payload.bookmarks || []).length;
+          const mnCount = (payload.mining_sites || []).length;
+          const ntCount = (payload.system_notes || []).length;
+          const msg = t('user_data_export_success', { bm: bmCount, mining: mnCount, notes: ntCount })
+            || `✅ Exported (${bmCount} bookmarks, ${mnCount} mining sites, ${ntCount} notes)`;
+          setBackupStatus(msg, false);
+        } catch (err) {
+          console.error('User data export failed:', err);
+          setBackupStatus(`${t('user_data_export_failed') || '❌ Export failed'}: ${err.message}`, true);
+        } finally {
+          btnExport.disabled = false;
+        }
+      });
+    }
+
+    if (btnImport && fileInput && !btnImport.dataset.bound) {
+      btnImport.dataset.bound = '1';
+      btnImport.addEventListener('click', () => {
+        fileInput.value = '';
+        fileInput.click();
+      });
+
+      fileInput.addEventListener('change', async (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+        btnImport.disabled = true;
+        setBackupStatus(t('user_data_importing') || '⏳ Importing...', false);
+        try {
+          const rawText = await file.text();
+          const parsedData = JSON.parse(rawText);
+          const mode = conflictSel ? conflictSel.value : 'skip';
+          const res = await fetch('/api/user_data/import', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ data: parsedData, conflict_mode: mode })
+          });
+          const resJson = await res.json();
+          if (!res.ok) {
+            throw new Error(resJson.error || `HTTP ${res.status}`);
+          }
+          const bm = resJson.bookmarks || {};
+          const mn = resJson.mining_sites || {};
+          const nt = resJson.system_notes || {};
+          const msg = t('user_data_import_success', {
+            bm_add: bm.added || 0,
+            bm_upd: bm.updated || 0,
+            mn_add: mn.added || 0,
+            mn_upd: mn.updated || 0,
+            nt_upd: nt.updated || 0
+          }) || `✅ Imported: Bookmarks +${bm.added || 0}/${bm.updated || 0}, Mining +${mn.added || 0}/${mn.updated || 0}`;
+          setBackupStatus(msg, false);
+
+          // Refresh UI to reflect newly imported bookmarks/notes
+          if (typeof fetchSystems === 'function') {
+            await fetchSystems({ suppressAutoSelect: true });
+          }
+          if (state.selectedSystem && state.selectedSystem.system_address && typeof selectSystem === 'function') {
+            await selectSystem(state.selectedSystem.system_address, true, false, false);
+          }
+        } catch (err) {
+          console.error('User data import failed:', err);
+          setBackupStatus(`${t('user_data_import_failed') || '❌ Import failed'}: ${err.message}`, true);
+        } finally {
+          btnImport.disabled = false;
+        }
+      });
+    }
+  })();
+
   const addonToggleList = document.getElementById('addon-toggle-list');
   const addonRestartBanner = document.getElementById('addon-restart-banner');
   const btnAddonRestartNow = document.getElementById('btn-addon-restart-now');
