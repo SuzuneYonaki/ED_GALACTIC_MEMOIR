@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import json
 import glob
 import sqlite3
@@ -2098,7 +2099,21 @@ class JournalParser:
         total = len(files)
         count = 0
         for fpath in files:
-            self.parse_file(fpath)
+            max_attempts = 5
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    self.parse_file(fpath)
+                    break
+                except sqlite3.OperationalError as op_err:
+                    err_msg = str(op_err).lower()
+                    if ("locked" in err_msg or "busy" in err_msg) and attempt < max_attempts:
+                        time.sleep(0.15 * attempt)
+                        continue
+                    print(f"[Journal Batch Warning] DB error on {Path(fpath).name}: {op_err}")
+                    break
+                except Exception as file_err:
+                    print(f"[Journal Batch Warning] Skipped {Path(fpath).name} due to error: {file_err}")
+                    break
             count += 1
             if progress_callback:
                 progress_callback(count, total, Path(fpath).name)

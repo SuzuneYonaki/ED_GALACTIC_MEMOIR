@@ -57,9 +57,14 @@
                 <div style="font-weight: bold; color: #fff;" data-i18n="settings_rescan_title">手動ログスキャン実行</div>
                 <div style="font-size: 0.75rem; color: var(--text-secondary);" data-i18n="settings_rescan_desc">全ジャーナルファイルを再解析しデータベースを更新します</div>
               </div>
-              <button id="btn-modal-rescan" class="btn-primary" style="padding: 6px 14px; font-size: 0.8rem;" data-i18n="btn_modal_rescan">
-                🔄 ログスキャン開始
-              </button>
+              <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                <button id="btn-modal-rescan" class="btn-primary" style="padding: 6px 14px; font-size: 0.8rem;" data-i18n="btn_modal_rescan">
+                  🔄 ログスキャン開始
+                </button>
+                <button id="btn-modal-force-rescan" class="view-btn" style="padding: 6px 12px; font-size: 0.76rem;" data-i18n-title="tip_modal_force_rescan" title="読み込み履歴をリセットして全ファイルを最初から読み直します（ブックマーク・メモは保持）" data-i18n="btn_modal_force_rescan">
+                  ♻️ 最初から再スキャン
+                </button>
+              </div>
             </div>
             <div id="modal-scan-status-text" style="font-size: 0.75rem; color: var(--ed-cyan); font-family: monospace;"></div>
           </div>
