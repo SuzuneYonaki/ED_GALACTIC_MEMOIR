@@ -46,6 +46,7 @@ from app.services.search_service import (
     safe_sync_system_search_index,
     ensure_search_index,
 )
+from app.services.user_data_service import export_user_data, import_user_data
 from app.live.rhino.note_integrator import update_body_note_in_db
 from app.live.rhino.tracker import sync_body_mining_to_note, extract_all_mining_materials_for_body, extract_rhino_mining_sites
 # app.services.export_service is imported inline (build_interactive_orrery in
@@ -2971,6 +2972,47 @@ def check_update(force: bool = False):
     Checks GitHub Releases for a newer version of the application.
     """
     return version_service.check_update(force=force)
+
+class UserDataImportRequest(BaseModel):
+    data: dict
+    conflict_mode: Optional[str] = "skip"
+
+
+@app.get("/api/user_data/export")
+def export_user_data_endpoint():
+    """Exports user bookmarks, body notes, mining sites, and system notes as JSON."""
+    conn = get_db_connection()
+    try:
+        payload = export_user_data(conn)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"ed_memoir_backup_{ts}.json"
+        return JSONResponse(
+            content=payload,
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+            },
+        )
+    finally:
+        conn.close()
+
+
+@app.post("/api/user_data/import")
+def import_user_data_endpoint(req: UserDataImportRequest):
+    """Imports user bookmarks, body notes, mining sites, and system notes from JSON."""
+    conn = get_db_connection()
+    try:
+        mode = (req.conflict_mode or "skip").strip().lower()
+        if mode not in ("skip", "overwrite"):
+            return JSONResponse({"error": "conflict_mode must be 'skip' or 'overwrite'"}, status_code=400)
+        result = import_user_data(conn, req.data, conflict_mode=mode)
+        return result
+    except ValueError as ve:
+        return JSONResponse({"error": str(ve)}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"error": f"Import failed: {str(e)}"}, status_code=500)
+    finally:
+        conn.close()
+
 
 import jinja2
 
