@@ -2,7 +2,7 @@ import os
 import sys
 from pathlib import Path
 
-APP_VERSION = "0.9.4"
+APP_VERSION = "0.9.5"
 
 # PyInstaller one-file extraction support
 if getattr(sys, 'frozen', False):

@@ -8,7 +8,7 @@
 > かつて駆け抜けた宙域の記録を呼び覚ます、あなたの航路日誌です。
 > ジャーナルの奥底に眠っていた旅のログを掘り起こし、過去の探査履歴や観測データを鮮明に可視化します。
 
-[![Version](https://img.shields.io/badge/release-v0.9.4-blue.svg)](https://github.com/SuzuneYonaki/ED_GALACTIC_MEMOIR/releases)
+[![Version](https://img.shields.io/badge/release-v0.9.5-blue.svg)](https://github.com/SuzuneYonaki/ED_GALACTIC_MEMOIR/releases)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 
@@ -160,13 +160,13 @@ python run.py
 配布用バイナリおよびZIPアーカイブは、最新定義のアンチウイルスによる検査を実施済みです：
 
 - **ローカル検疫**: Microsoft Defender (`MpCmdRun.exe`) によるフルスキャン完了（**脅威ゼロ / Clean**）
-- **完全性検証用 SHA-256 チェックサム (v0.9.4)**:
+- **完全性検証用 SHA-256 チェックサム (v0.9.5)**:
   ```text
   ED_GALACTIC_MEMOIR.exe:
-  db5025688d5f52ac06ab1f7691db89f335f2f131f4514ded31bf37130db919ba
+  fd554bf7fa41f306c7cb4a7ecf75e80d777f49957573ad09e96db287a611adac
 
   ED_GALACTIC_MEMOIR.zip:
-  e26dfe51698234daa93f3f116c33b220e93748c9fec382e3bdce8410907572e4
+  c799b4e13c719f356c81f5a9cc501ea3725d8ae584c169b4dc6e97d8b50f5756
   ```
 
 #### 3. 🌐 VirusTotal による多重エンジン検証（推奨・無料）
@@ -290,13 +290,13 @@ Verified by continuous automated security tests (`tests/test_penetration_securit
 All pre-built binaries and archive packages are scanned prior to release:
 
 - **Local Quarantine**: Full scan passed via Microsoft Defender (`MpCmdRun.exe`) with **Zero Threats Found (Clean)**.
-- **Official SHA-256 Checksums (v0.9.4)**:
+- **Official SHA-256 Checksums (v0.9.5)**:
   ```text
   ED_GALACTIC_MEMOIR.exe:
-  db5025688d5f52ac06ab1f7691db89f335f2f131f4514ded31bf37130db919ba
+  fd554bf7fa41f306c7cb4a7ecf75e80d777f49957573ad09e96db287a611adac
 
   ED_GALACTIC_MEMOIR.zip:
-  e26dfe51698234daa93f3f116c33b220e93748c9fec382e3bdce8410907572e4
+  c799b4e13c719f356c81f5a9cc501ea3725d8ae584c169b4dc6e97d8b50f5756
   ```
 
 #### 3. 🌐 Multi-Engine Verification via VirusTotal (Free & Highly Trusted)
