@@ -74,3 +74,40 @@ def test_force_rescan_ui_and_error_reporting():
     i18n_js = Path("app/ui/js/i18n.js").read_text(encoding="utf-8")
     for key in ("btn_modal_force_rescan", "confirm_force_rescan", "scan_error_title"):
         assert i18n_js.count(f"{key}:") == 2
+
+
+def test_parse_all_journals_chunk_rollback_and_retry(tmp_path):
+    conn = sqlite3.connect(":memory:")
+    init_db(conn)
+    parser = JournalParser(db_conn=conn)
+
+    for idx in range(1, 5):
+        f = tmp_path / f"Journal.2026-11-24T00000{idx}.01.log"
+        f.write_text(
+            f'{{"timestamp":"2026-11-24T00:00:0{idx}Z","event":"FSDJump","StarSystem":"ChunkSys{idx}","SystemAddress":{3000+idx},"StarPos":[{idx},0,0]}}\n',
+            encoding="utf-8",
+        )
+
+    orig_parse = parser.parse_file
+    state = {"file2_calls": 0}
+
+    def flaky_second(filepath, progress_callback=None):
+        if "000002" in str(filepath):
+            state["file2_calls"] += 1
+            if state["file2_calls"] == 1:
+                raise sqlite3.OperationalError("database is locked")
+        return orig_parse(filepath, progress_callback=progress_callback)
+
+    parser.parse_file = flaky_second
+    count = parser.parse_all_journals(str(tmp_path), chunk_size=2)
+
+    assert count == 4
+    assert state["file2_calls"] == 2
+    rows = conn.execute("SELECT star_system, visit_count FROM systems ORDER BY system_address").fetchall()
+    # visit_count must be 1 (no double-counting from chunk rollback & retry)
+    assert [(r[0], r[1]) for r in rows] == [
+        ("ChunkSys1", 1),
+        ("ChunkSys2", 1),
+        ("ChunkSys3", 1),
+        ("ChunkSys4", 1),
+    ]

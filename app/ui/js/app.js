@@ -4561,8 +4561,8 @@ function pollScanProgress() {
         if (progressFill) progressFill.style.width = `${Math.max(2, st.percent || 0)}%`;
 
         pollCount++;
-        // Refresh UI list and stats every 3 polls (~750ms) so user sees progress
-        if (pollCount % 3 === 0) {
+        // Refresh UI list and stats every 16 polls (~4s) to avoid SQLite read contention during batch scan
+        if (pollCount % 16 === 0) {
           fetchGlobalStats();
           fetchSystems();
         }

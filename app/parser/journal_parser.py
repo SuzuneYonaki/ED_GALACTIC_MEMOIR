@@ -430,7 +430,7 @@ class JournalParser:
 
         return False
 
-    def flush_dirty_systems(self):
+    def flush_dirty_systems(self, commit: bool = True):
         """Update system-level stats for all modified systems during parsing."""
         if not self.dirty_systems:
             return
@@ -438,7 +438,8 @@ class JournalParser:
             self.modified_system_addresses.add(sys_addr)
             self._update_system_stats(sys_addr)
         self.dirty_systems.clear()
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
         invalidate_celestial_stats_cache()
 
     def process_journal_line(self, line: str):
@@ -2022,24 +2023,27 @@ class JournalParser:
                         break
 
                     line = raw_bytes.decode("utf-8", errors="replace")
+                    is_batch = getattr(self, "_in_batch_mode", False)
                     retries_map = getattr(self, "_op_error_retries", None)
                     if retries_map is None:
                         retries_map = {}
                         self._op_error_retries = retries_map
                     retry_key = (filename, line_start_pos)
-                    try:
-                        # Ensure an outer transaction is open so RELEASE SAVEPOINT does not commit mid-file.
-                        if not getattr(self.conn, "in_transaction", False):
-                            self.cursor.execute("BEGIN")
-                        self.cursor.execute("SAVEPOINT parse_line_sp")
-                    except sqlite3.Error:
-                        pass
-                    try:
-                        self.process_journal_line(line)
+                    if not is_batch:
                         try:
-                            self.cursor.execute("RELEASE SAVEPOINT parse_line_sp")
+                            # Ensure an outer transaction is open so RELEASE SAVEPOINT does not commit mid-file.
+                            if not getattr(self.conn, "in_transaction", False):
+                                self.cursor.execute("BEGIN")
+                            self.cursor.execute("SAVEPOINT parse_line_sp")
                         except sqlite3.Error:
                             pass
+                    try:
+                        self.process_journal_line(line)
+                        if not is_batch:
+                            try:
+                                self.cursor.execute("RELEASE SAVEPOINT parse_line_sp")
+                            except sqlite3.Error:
+                                pass
                         retries_map.pop(retry_key, None)
                     except sqlite3.OperationalError as op_err:
                         err_msg = str(op_err).lower()
@@ -2055,19 +2059,21 @@ class JournalParser:
                             self.dirty_systems.clear()
                             raise
                         # Deterministic non-lock OperationalError repeated >3 times on one line: quarantine this line only.
-                        try:
-                            self.cursor.execute("ROLLBACK TO SAVEPOINT parse_line_sp")
-                            self.cursor.execute("RELEASE SAVEPOINT parse_line_sp")
-                        except sqlite3.Error:
-                            pass
+                        if not is_batch:
+                            try:
+                                self.cursor.execute("ROLLBACK TO SAVEPOINT parse_line_sp")
+                                self.cursor.execute("RELEASE SAVEPOINT parse_line_sp")
+                            except sqlite3.Error:
+                                pass
                         retries_map.pop(retry_key, None)
                         print(f"[Journal Line OperationalError Quarantined] Skipped persistent SQL error in {filename}: {op_err}")
                     except Exception as line_err:
-                        try:
-                            self.cursor.execute("ROLLBACK TO SAVEPOINT parse_line_sp")
-                            self.cursor.execute("RELEASE SAVEPOINT parse_line_sp")
-                        except sqlite3.Error:
-                            pass
+                        if not is_batch:
+                            try:
+                                self.cursor.execute("ROLLBACK TO SAVEPOINT parse_line_sp")
+                                self.cursor.execute("RELEASE SAVEPOINT parse_line_sp")
+                            except sqlite3.Error:
+                                pass
                         print(f"[Journal Line Warning] Skipped malformed line in {filename}: {line_err}")
                     valid_bytes_processed = f.tell()
 
@@ -2078,8 +2084,11 @@ class JournalParser:
             print(f"[Journal Read Warning] File locked or unavailable ({filename}): {read_err}")
             return
 
-        # Batch-update systems modified during this file's parse
-        self.flush_dirty_systems()
+        is_batch = getattr(self, "_in_batch_mode", False)
+        # In single-file/live mode, update system stats immediately before committing;
+        # in batch mode, defer stats aggregation and commit to chunk boundaries.
+        if not is_batch:
+            self.flush_dirty_systems(commit=False)
 
         now_str = datetime.now().isoformat()
         self.cursor.execute("""
@@ -2091,35 +2100,66 @@ class JournalParser:
                 parsed_at = excluded.parsed_at,
                 last_line_offset = excluded.last_line_offset
         """, (filename, file_size, last_mod, now_str, current_offset))
+        self._batch_has_uncommitted = True
 
-        self.conn.commit()
+        if not is_batch:
+            self.conn.commit()
 
-    def parse_all_journals(self, journal_dir: str, progress_callback=None) -> int:
+    def parse_all_journals(self, journal_dir: str, progress_callback=None, chunk_size: int = 50) -> int:
         files = sorted(glob.glob(os.path.join(journal_dir, "Journal.*.log")))
         total = len(files)
-        count = 0
-        for fpath in files:
-            max_attempts = 5
-            for attempt in range(1, max_attempts + 1):
-                try:
-                    self.parse_file(fpath)
-                    break
-                except sqlite3.OperationalError as op_err:
-                    err_msg = str(op_err).lower()
-                    if ("locked" in err_msg or "busy" in err_msg) and attempt < max_attempts:
-                        time.sleep(0.15 * attempt)
-                        continue
-                    print(f"[Journal Batch Warning] DB error on {Path(fpath).name}: {op_err}")
-                    break
-                except Exception as file_err:
-                    print(f"[Journal Batch Warning] Skipped {Path(fpath).name} due to error: {file_err}")
-                    break
-            count += 1
-            if progress_callback:
-                progress_callback(count, total, Path(fpath).name)
-        self.flush_dirty_systems()
-        self.conn.commit()
-        return count
+        if total == 0:
+            return 0
+
+        try:
+            self.cursor.execute("PRAGMA cache_size = -64000;")
+            self.cursor.execute("PRAGMA temp_store = MEMORY;")
+        except sqlite3.Error:
+            pass
+
+        self._in_batch_mode = True
+        self._batch_has_uncommitted = False
+        processed_count = 0
+        try:
+            step = max(1, int(chunk_size))
+            for chunk_start in range(0, total, step):
+                chunk = files[chunk_start:chunk_start + step]
+                max_attempts = 5
+                for attempt in range(1, max_attempts + 1):
+                    try:
+                        for offset_idx, fpath in enumerate(chunk):
+                            try:
+                                self.parse_file(fpath)
+                            except sqlite3.OperationalError:
+                                raise
+                            except Exception as file_err:
+                                print(f"[Journal Batch Warning] Skipped {Path(fpath).name} due to error: {file_err}")
+                            if progress_callback:
+                                progress_callback(chunk_start + offset_idx + 1, total, Path(fpath).name)
+                        if self._batch_has_uncommitted or self.dirty_systems:
+                            self.flush_dirty_systems(commit=False)
+                            self.conn.commit()
+                            self._batch_has_uncommitted = False
+                        break
+                    except sqlite3.OperationalError as op_err:
+                        try:
+                            self.conn.rollback()
+                        except sqlite3.Error:
+                            pass
+                        self.dirty_systems.clear()
+                        self._batch_has_uncommitted = False
+                        err_msg = str(op_err).lower()
+                        if ("locked" in err_msg or "busy" in err_msg) and attempt < max_attempts:
+                            time.sleep(0.15 * attempt)
+                            continue
+                        print(f"[Journal Batch Warning] DB error in chunk starting at {chunk_start}: {op_err}")
+                        break
+                processed_count += len(chunk)
+        finally:
+            self._in_batch_mode = False
+            self._batch_has_uncommitted = False
+
+        return processed_count
 
     def backfill_star_ages(self, journal_dir: str | Path, progress_callback=None) -> dict:
         """
