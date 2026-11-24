@@ -2548,8 +2548,8 @@ def run_background_parse(force_full: bool = False):
                 save_app_settings_data({"exobiology_engine_v2_done": True})
         scan_state["current"] = tot
         scan_state["total"] = tot
-        scan_state["percent"] = 100
-        scan_state["filename"] = ""
+        scan_state["percent"] = 99
+        scan_state["filename"] = "Updating full-text search index..."
         scan_state["message"] = "Updating full-text search index..."
         try:
             _idx_conn = get_db_connection()
@@ -2567,6 +2567,8 @@ def run_background_parse(force_full: bool = False):
                 _idx_conn.close()
         except Exception as _idx_err:
             print(f"[SearchIndex] Background index update warning: {_idx_err}")
+        scan_state["percent"] = 100
+        scan_state["filename"] = ""
         scan_state["message"] = f"Successfully parsed {tot} journal files from {target_dir}."
     except Exception as e:
         scan_state["error"] = True

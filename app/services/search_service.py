@@ -416,20 +416,65 @@ def _collect_documents(
     return docs
 
 
+_FTS_TRIGGERS_SQL = (
+    """
+    CREATE TRIGGER IF NOT EXISTS search_docs_ai AFTER INSERT ON search_documents BEGIN
+        INSERT INTO search_documents_fts(rowid, title, content)
+        VALUES (new.doc_id, new.title, new.content);
+    END;
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS search_docs_ad AFTER DELETE ON search_documents BEGIN
+        INSERT INTO search_documents_fts(search_documents_fts, rowid, title, content)
+        VALUES ('delete', old.doc_id, old.title, old.content);
+    END;
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS search_docs_au AFTER UPDATE ON search_documents BEGIN
+        INSERT INTO search_documents_fts(search_documents_fts, rowid, title, content)
+        VALUES ('delete', old.doc_id, old.title, old.content);
+        INSERT INTO search_documents_fts(rowid, title, content)
+        VALUES (new.doc_id, new.title, new.content);
+    END;
+    """,
+)
+
+
 def rebuild_search_index(conn: sqlite3.Connection) -> int:
     """Rebuilds the entire full-text search index from all database tables."""
-    docs = _collect_documents(conn, system_address=None)
     cur = conn.cursor()
-    cur.execute("DELETE FROM search_documents;")
-    if docs:
-        cur.executemany(
-            """
-            INSERT OR REPLACE INTO search_documents
-            (doc_key, category, system_address, star_system, body_id, body_name, title, content, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            docs,
-        )
+    try:
+        cur.execute("PRAGMA cache_size = -64000;")
+        cur.execute("PRAGMA temp_store = MEMORY;")
+    except sqlite3.Error:
+        pass
+
+    docs = _collect_documents(conn, system_address=None)
+    has_fts = _has_fts5_table(conn)
+
+    if has_fts:
+        cur.execute("DROP TRIGGER IF EXISTS search_docs_ai;")
+        cur.execute("DROP TRIGGER IF EXISTS search_docs_ad;")
+        cur.execute("DROP TRIGGER IF EXISTS search_docs_au;")
+
+    try:
+        cur.execute("DELETE FROM search_documents;")
+        if docs:
+            cur.executemany(
+                """
+                INSERT INTO search_documents
+                (doc_key, category, system_address, star_system, body_id, body_name, title, content, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                docs,
+            )
+        if has_fts:
+            cur.execute("INSERT INTO search_documents_fts(search_documents_fts) VALUES('rebuild');")
+    finally:
+        if has_fts:
+            for trig_sql in _FTS_TRIGGERS_SQL:
+                cur.execute(trig_sql)
+
     conn.commit()
     return len(docs)
 

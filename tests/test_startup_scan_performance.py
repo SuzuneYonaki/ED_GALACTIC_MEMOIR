@@ -52,3 +52,33 @@ def test_incremental_search_index_startup_flow():
     safe_sync_system_search_index(conn, 1001)
     count3 = cur.execute("SELECT COUNT(*) FROM search_documents").fetchone()[0]
     assert count3 == count
+
+
+def test_rebuild_search_index_restores_fts_triggers_and_searches():
+    from pathlib import Path
+    from app.services.search_service import rebuild_search_index, search_fulltext
+
+    conn = sqlite3.connect(":memory:")
+    init_db(conn)
+    cur = conn.cursor()
+    cur.execute("INSERT INTO systems (system_address, star_system, visit_count) VALUES (?, ?, ?)", (5001, "Beagle Point", 1))
+    cur.execute("INSERT INTO bodies (system_address, body_name, body_id, planet_class) VALUES (?, ?, ?, ?)", (5001, "Beagle Point 2", 2, "Earthlike body"))
+    conn.commit()
+
+    count = rebuild_search_index(conn)
+    assert count >= 2
+
+    # Check triggers restored
+    trigs = cur.execute(
+        "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='search_documents'"
+    ).fetchall()
+    trig_names = {r[0] for r in trigs}
+    assert {"search_docs_ai", "search_docs_ad", "search_docs_au"}.issubset(trig_names)
+
+    # Check search works
+    res = search_fulltext(conn, "Beagle")
+    assert res["total"] >= 1
+
+    # Check api.py sets 99% while updating search index
+    api_text = Path("app/server/api.py").read_text(encoding="utf-8")
+    assert 'scan_state["percent"] = 99' in api_text
