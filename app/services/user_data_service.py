@@ -11,7 +11,6 @@ import sqlite3
 from typing import Any, Dict, List, Set
 
 from app.config import APP_VERSION
-from app.services.search_service import safe_sync_system_search_index
 
 USER_DATA_FORMAT = "ed_galactic_memoir_user_data"
 USER_DATA_SCHEMA_VERSION = 1
@@ -336,10 +335,6 @@ def import_user_data(
     notes_stats = _import_system_notes(cur, notes_list, mode, modified_systems)
 
     conn.commit()
-
-    # Sync full-text search index for modified systems
-    for sys_addr in modified_systems:
-        safe_sync_system_search_index(conn, sys_addr)
 
     return {
         "status": "ok",

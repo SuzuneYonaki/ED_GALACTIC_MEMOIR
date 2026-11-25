@@ -10,7 +10,6 @@ from app.services.user_data_service import (
     export_user_data,
     import_user_data,
 )
-from app.services.search_service import search_fulltext
 
 
 def _setup_in_memory_db():
@@ -101,9 +100,11 @@ def test_export_and_import_skip_and_overwrite():
     row_sys2 = dcur.execute("SELECT shared_notes FROM systems WHERE system_address = 1001").fetchone()
     assert row_sys2[0] == "Home system memo"
 
-    # 3. Verify search index synced
-    search_res = search_fulltext(dst_conn, "Homeworld")
-    assert search_res["total"] >= 1
+    # 3. Verify LIKE search finds the imported alias
+    like_rows = dcur.execute(
+        "SELECT system_address FROM body_bookmarks WHERE alias_name LIKE ?", ("%Homeworld%",)
+    ).fetchall()
+    assert len(like_rows) == 1
 
 
 def test_import_validation_errors():

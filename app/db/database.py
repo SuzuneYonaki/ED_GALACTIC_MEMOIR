@@ -996,38 +996,13 @@ def init_db(conn=None, force: bool = False):
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_search_docs_sys ON search_documents(system_address);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_search_docs_cat ON search_documents(category);")
 
+    # Drop legacy FTS5 triggers if present to eliminate index overhead
     try:
-        cursor.execute("""
-        CREATE VIRTUAL TABLE IF NOT EXISTS search_documents_fts USING fts5(
-            title,
-            content,
-            content='search_documents',
-            content_rowid='doc_id',
-            tokenize='trigram'
-        );
-        """)
-        cursor.execute("""
-        CREATE TRIGGER IF NOT EXISTS search_docs_ai AFTER INSERT ON search_documents BEGIN
-            INSERT INTO search_documents_fts(rowid, title, content)
-            VALUES (new.doc_id, new.title, new.content);
-        END;
-        """)
-        cursor.execute("""
-        CREATE TRIGGER IF NOT EXISTS search_docs_ad AFTER DELETE ON search_documents BEGIN
-            INSERT INTO search_documents_fts(search_documents_fts, rowid, title, content)
-            VALUES ('delete', old.doc_id, old.title, old.content);
-        END;
-        """)
-        cursor.execute("""
-        CREATE TRIGGER IF NOT EXISTS search_docs_au AFTER UPDATE ON search_documents BEGIN
-            INSERT INTO search_documents_fts(search_documents_fts, rowid, title, content)
-            VALUES ('delete', old.doc_id, old.title, old.content);
-            INSERT INTO search_documents_fts(rowid, title, content)
-            VALUES (new.doc_id, new.title, new.content);
-        END;
-        """)
-    except sqlite3.OperationalError as fts_err:
-        print(f"[DB] FTS5 trigram initialization skipped: {fts_err}")
+        cursor.execute("DROP TRIGGER IF EXISTS search_docs_ai;")
+        cursor.execute("DROP TRIGGER IF EXISTS search_docs_ad;")
+        cursor.execute("DROP TRIGGER IF EXISTS search_docs_au;")
+    except sqlite3.OperationalError:
+        pass
 
     conn.commit()
     _DB_INITIALIZED = True

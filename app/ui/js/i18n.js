@@ -69,7 +69,7 @@ const i18n = {
     search_mode_label: "表示:",
 
     // Left Pane
-    search_placeholder: "星系名・メモ・天体・生体・鉱物を検索 (AND / OR / -除外)...",
+    search_placeholder: "星系名・ブックマーク・メモを検索...",
     btn_open_fulltext_search: "🔎 全文検索ウィンドウ",
     btn_open_fulltext_search_tip: "メモ・天体・生体・鉱物・施設・物理レポートを横断全文検索します",
     global_search_title: "🔎 全文検索 (Full-Text Cross-Search)",
